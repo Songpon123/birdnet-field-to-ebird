@@ -1,0 +1,22 @@
+# venv / build
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+
+# ผลลัพธ์ / ไฟล์เสียง (ไม่ commit)
+output/
+BirdNET_eBird/
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.xlsx
+*.png
+
+# misc
+*.log
+.streamlit/
+.DS_Store

@@ -1,0 +1,5 @@
+# Shell scripts / mac launcher MUST stay LF or bash on macOS breaks (bad interpreter)
+*.sh        text eol=lf
+*.command   text eol=lf
+# PowerShell can be CRLF (Windows)
+*.ps1       text eol=crlf

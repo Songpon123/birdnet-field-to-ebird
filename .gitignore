@@ -6,6 +6,15 @@ __pycache__/
 *.pyc
 *.pyo
 
+# PyInstaller / build ชั่วคราว
+build/
+dist/
+dist_launcher/
+build_launcher/
+*.manifest
+*.spec
+bundle_pip.log
+
 # ผลลัพธ์ / ไฟล์เสียง (ไม่ commit)
 output/
 BirdNET_eBird/

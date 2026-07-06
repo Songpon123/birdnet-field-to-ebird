@@ -1,0 +1,15 @@
+# deps สำหรับ build .exe (bundle) — ใช้ ai-edge-litert แทน full TensorFlow
+# (เบากว่ามาก + ไม่ต้อง bundle TF ~1.5GB) ผ่าน shim tflite_runtime/
+# ไม่มี streamlit (exe ใช้ Tkinter GUI + CLI)
+birdnetlib==0.18.1
+ai-edge-litert==2.1.6
+librosa==0.11.0
+resampy==0.4.3
+pydub==0.25.1
+soundfile==0.14.0
+numpy==2.4.6
+scipy==1.17.1
+numba==0.65.1
+pandas==3.0.3
+openpyxl==3.1.5
+matplotlib==3.10.9

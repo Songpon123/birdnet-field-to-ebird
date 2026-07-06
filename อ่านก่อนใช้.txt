@@ -1,0 +1,83 @@
+﻿============================================================
+  BirdNET  →  eBird  clipper      อ่านก่อนใช้ / READ ME FIRST
+============================================================
+
+โปรแกรมช่วยตัดคลิปเสียงนกจากไฟล์อัดสนามยาว ๆ ด้วย BirdNET
+เตรียมไฟล์ให้พร้อมอัปขึ้น eBird / Macaulay Library
+
+------------------------------------------------------------
+วิธีเปิด (สำคัญ — ทำตามให้ครบ)
+------------------------------------------------------------
+1. แตกไฟล์ ZIP ทั้งอันก่อน  (คลิกขวาที่ไฟล์ ZIP > Extract All / แตกไฟล์)
+   อย่าเปิด .exe จากข้างในไฟล์ ZIP ตรง ๆ — จะเปิดไม่ได้
+2. อย่าแยกไฟล์ออกจากกัน — เก็บทั้งโฟลเดอร์ BirdNET-eBird ไว้ด้วยกัน
+   (ห้ามลาก BirdNET-eBird.exe ออกไปไว้ที่อื่นเดี่ยว ๆ)
+3. ดับเบิลคลิก  BirdNET-eBird.exe
+4. ครั้งแรก Windows อาจขึ้น "Windows protected your PC"
+   ให้กด  More info  แล้วกด  Run anyway
+   (เป็นเรื่องปกติของโปรแกรมที่ยังไม่ได้เซ็นลายเซ็นดิจิทัล ไฟล์ปลอดภัย)
+
+ต้องลงโปรแกรมอะไรเพิ่มไหม ?  ไม่ต้องเลย
+ขอแค่เครื่อง Windows 10 หรือ 11 (64-bit)
+
+------------------------------------------------------------
+ใช้งานคร่าว ๆ
+------------------------------------------------------------
+แท็บ Analyze : เลือกไฟล์เสียงหรือทั้งโฟลเดอร์ > ใส่พิกัด (lat,lon เช่น
+   13.8119502,100.553166 หรือวางลิงก์ Google Maps ก็ได้) > กด Analyze
+   ผลลัพธ์ออกเป็นคลิปแยกตามชนิดนก + ไฟล์ summary.xlsx
+   ชื่อไฟล์ลงท้าย R0 = ยังไม่ตรวจ ให้ฟัง/ดู spectrogram แล้วแก้เป็น R1-R5 เอง
+
+แท็บ Merge (same individual) : รวมหลายคลิป "ของนกตัวเดียวกัน" เป็นไฟล์เดียว
+   (คั่นความเงียบ 1 วินาทีตามคู่มือ eBird)  *รวมเฉพาะนกตัวเดียวกันเท่านั้น*
+
+พิมพ์ไทยแล้ว Ctrl+V วางไม่ได้ ?  คลิกขวาในช่อง > Paste ได้เลย
+
+------------------------------------------------------------
+ช่วยกันอัปข้อมูลขึ้น eBird
+------------------------------------------------------------
+อย่าปล่อยให้เสียงนกที่อัดไว้นอนอยู่ในฮาร์ดดิสก์
+พอ review + ให้ rating แล้ว อัปขึ้น eBird / Macaulay Library :
+ - เพิ่มคลังข้อมูล citizen science ระดับโลก ที่นักวิจัย/นักอนุรักษ์เอาไปใช้
+   ติดตามการกระจาย ฤดูกาล และการเปลี่ยนแปลงประชากรนก
+ - ช่วย train Merlin Bird ID ให้แม่นขึ้น โดยเฉพาะภูมิภาคที่ข้อมูลยังน้อย
+   อย่างเอเชียตะวันออกเฉียงใต้
+เสียงที่คุณอัดมีค่า — ตัด เช็ค แล้วส่งขึ้นไป
+
+------------------------------------------------------------
+ขอบคุณ
+------------------------------------------------------------
+เครื่องมือนี้เกิดขึ้นได้จากความรู้ คำแนะนำ และประสบการณ์ภาคสนามของ
+ - Biopikat  (ผู้พัฒนา / เพจ Biopikat)
+ - Tripitcha Wanwimolruk
+ - Wichyanan Limparungpatthanakij
+ - Utain Pummarin
+ - Chutinton Viriyapanon
+ - ทีม eBird reviewer ประเทศไทย
+ - Cornell Lab of Ornithology  (BirdNET, Merlin Bird ID, eBird / Macaulay Library)
+ - Anthropic  (Claude — ผู้ช่วยพัฒนาและเขียนโค้ดเครื่องมือนี้)
+ขอบคุณที่แบ่งปันข้อมูล และเวลาให้กับงานนี้
+
+============================================================
+  ENGLISH
+============================================================
+How to open:
+1. Extract the whole ZIP first (right-click > Extract All). Do NOT run
+   the .exe from inside the ZIP preview.
+2. Keep the whole BirdNET-eBird folder together; don't move the .exe out.
+3. Double-click BirdNET-eBird.exe
+4. If Windows SmartScreen shows "Windows protected your PC", click
+   More info > Run anyway (normal for unsigned apps; the file is safe).
+Needs nothing installed — just 64-bit Windows 10/11.
+
+Analyze tab: pick a file/folder, enter coords (lat,lon or a Google Maps
+link), click Analyze. Output = clips per species + summary.xlsx. "R0" =
+unreviewed; listen/check, then rename to R1-R5.
+Merge tab: join clips of the SAME individual bird into one file.
+
+Please upload your recordings to eBird / Macaulay Library — it powers
+citizen science and helps train Merlin Bird ID to be more accurate.
+
+Thanks to: Biopikat, Tripitcha Wanwimolruk, Wichyanan Limparungpatthanakij,
+Utain Pummarin, Chutinton Viriyapanon, the eBird reviewers of Thailand, the
+Cornell Lab of Ornithology, and Anthropic (Claude).

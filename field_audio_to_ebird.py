@@ -105,7 +105,7 @@ def _configure_runtime():
         if Path(ffprobe).is_file():
             AudioSegment.ffprobe = ffprobe
     else:
-        print("เตือน: หา ffmpeg ไม่เจอ — การอ่าน/เขียนไฟล์เสียงอาจล้มเหลว")
+        print("Warning: ffmpeg not found — reading/writing audio may fail")
 
 
 _configure_runtime()
@@ -388,7 +388,7 @@ def save_mel_spectrogram(seg: AudioSegment, png_path: Path, title: str) -> bool:
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError as exc:
-        print(f"    (ข้าม spectrogram: import ไม่ได้ -> {exc})")
+        print(f"    (skipping spectrogram: import failed -> {exc})")
         return False
 
     samples = np.array(seg.get_array_of_samples()).astype(np.float32)
@@ -461,7 +461,7 @@ def gen_spectrograms(dirs):
                 for _, r in sdf.iterrows():
                     meta[Path(str(r["File"])).name] = r
             except Exception as exc:  # noqa: BLE001
-                print(f"  (อ่าน summary.xlsx ไม่ได้ ใช้ชื่อไฟล์แทน: {exc})")
+                print(f"  (could not read summary.xlsx, using filenames: {exc})")
         for wav in sorted(d.rglob("*.wav")):
             png = wav.with_suffix(".png")
             if png.exists():
@@ -478,7 +478,7 @@ def gen_spectrograms(dirs):
             except Exception as exc:  # noqa: BLE001
                 failed += 1
                 print(f"  !! spectrogram {wav.name}: {exc}")
-    print(f"spectrogram เสร็จ: สร้าง {made}, ข้ามที่มีแล้ว {skipped}, ล้มเหลว {failed}")
+    print(f"spectrograms done: created {made}, skipped existing {skipped}, failed {failed}")
 
 
 def run_spectrogram_subprocess(date_dirs):
@@ -536,7 +536,7 @@ def group_clips(wav_paths, out_path: Path, silence_ms=1000, target_dbfs=-3.0, tr
             seg = _trim_edges(seg)
         segs.append(seg)
     if not segs:
-        print("group: ไม่มีคลิป")
+        print("group: no clips")
         return
     sr, ch, sw = segs[0].frame_rate, segs[0].channels, segs[0].sample_width
     gap = AudioSegment.silent(duration=silence_ms, frame_rate=sr).set_channels(ch).set_sample_width(sw)
@@ -547,7 +547,7 @@ def group_clips(wav_paths, out_path: Path, silence_ms=1000, target_dbfs=-3.0, tr
     out = normalize_to(out, target_dbfs)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     _export_clip(out, out_path, out_path.suffix.lstrip(".") or "wav", subtype)
-    print(f"group: รวม {len(segs)} คลิป -> {out_path} ({len(out)/1000:.0f}s)")
+    print(f"group: merged {len(segs)} clips -> {out_path} ({len(out)/1000:.0f}s)")
 
 
 def _depth(subtype):
@@ -631,7 +631,7 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
     # ---- วันเวลาเริ่มอัด ----  ลำดับ: --date > (ชื่อไฟล์ > metadata ถ้าไม่บังคับ filetime) > เวลาไฟล์
     fn_dt = None if use_filetime else filename_datetime(audio_path.name, dt_regex)
     if fn_dt:
-        rec_dt, dt_src = fn_dt, "ชื่อไฟล์"
+        rec_dt, dt_src = fn_dt, "filename"
     elif meta.get("datetime"):
         rec_dt, dt_src = meta["datetime"], "metadata"
     else:
@@ -639,7 +639,7 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
         # mtime = เขียนจบ; แต่ถ้า copy มา ctime จะใหม่ -> min() เลือกอันที่ใกล้วันอัดสุด)
         stt = audio_path.stat()
         rec_dt = datetime.fromtimestamp(min(stt.st_mtime, stt.st_ctime))
-        dt_src = "เวลาไฟล์ (เริ่มบันทึก)"
+        dt_src = "file time (recording start)"
     if date_override:
         rec_dt = rec_dt.replace(year=date_override.year, month=date_override.month,
                                 day=date_override.day)
@@ -665,30 +665,30 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
 
     # ข้ามถ้าไฟล์นี้เคยตัดแล้ว (เช็คก่อน analyze เพื่อไม่เสียเวลา)
     if not force and _already_processed(date_folder, audio_path.name):
-        print(f"\n=== {audio_path.name} ===  ข้าม: เคยตัดแล้วใน {date_tag}/ (ใส่ --force เพื่อทำซ้ำ)")
+        print(f"\n=== {audio_path.name} ===  skip: already processed in {date_tag}/ (use --force to redo)")
         return [], None
 
     print(f"\n=== {audio_path.name} ===")
-    print(f"  เริ่มอัด {rec_dt:%Y-%m-%d %H:%M:%S} (จาก {dt_src}) | "
-          f"พิกัด {lat},{lon} ({lat_src})"
-          + (f" | สถานที่ {place}" if place else "") + f" | min_conf {min_conf}")
+    print(f"  recorded {rec_dt:%Y-%m-%d %H:%M:%S} (from {dt_src}) | "
+          f"coords {lat},{lon} ({lat_src})"
+          + (f" | place {place}" if place else "") + f" | min_conf {min_conf}")
 
     recording = Recording(analyzer, str(audio_path),
                           lat=lat, lon=lon, date=filter_date, min_conf=min_conf)
-    print("  กำลังวิเคราะห์เสียง (ไฟล์ยาวอาจใช้เวลาหลายนาที) ...")
+    print("  analyzing audio (long files may take several minutes) ...")
     recording.analyze()
     dets = recording.detections
-    print(f"  พบ detection {len(dets)} ช่วง")
+    print(f"  found {len(dets)} detections")
     if not dets:
-        print("  ไม่พบเสียงนกที่มั่นใจพอ — ข้ามไฟล์นี้ (ลองลด --min-conf)")
+        print("  no confident bird sounds — skipping this file (try lowering --min-conf)")
         return [], None
 
-    print("  กำลังโหลดไฟล์เสียงต้นฉบับ (เต็มคุณภาพ) ...")
+    print("  loading source audio (full quality) ...")
     src_mode, src = _open_source(audio_path)
     if src_mode == "sf":
         total_ms = int(src.frames / src.samplerate * 1000)
         export_subtype = _depth(src.subtype)[2]
-        print(f"    (stream ทีละช่วง: {src.samplerate}Hz {src.channels}ch {src.subtype} -> {export_subtype})")
+        print(f"    (streaming per segment: {src.samplerate}Hz {src.channels}ch {src.subtype} -> {export_subtype})")
     else:
         total_ms = len(src)
         export_subtype = None
@@ -796,38 +796,38 @@ def collect_inputs(input_path: Path):
 
 def build_parser():
     p = argparse.ArgumentParser(
-        description="ตัดคลิปนกจากเสียงสนามด้วย BirdNET เตรียมอัป eBird/Macaulay (ตามคู่มือ ML)",
+        description="Cut bird clips from long field recordings with BirdNET, ready for eBird/Macaulay",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("audio", nargs="?", default=AUDIO_FILE, help="ไฟล์เสียง หรือโฟลเดอร์ (batch)")
-    p.add_argument("-o", "--output", default=OUTPUT_DIR, help="โฟลเดอร์ผลลัพธ์")
-    p.add_argument("--lat", type=float, default=None, help="latitude (ไม่ใส่ = metadata/ค่า default)")
-    p.add_argument("--lon", type=float, default=None, help="longitude (ไม่ใส่ = metadata/ค่า default)")
+    p.add_argument("audio", nargs="?", default=AUDIO_FILE, help="audio file or folder (batch)")
+    p.add_argument("-o", "--output", default=OUTPUT_DIR, help="output folder")
+    p.add_argument("--lat", type=float, default=None, help="latitude (blank = metadata/default)")
+    p.add_argument("--lon", type=float, default=None, help="longitude (blank = metadata/default)")
     p.add_argument("--coords", default=None,
-                   help="พิกัดช่องเดียว 'lat,lon' หรือลิงก์ Google Maps (override --lat/--lon)")
-    p.add_argument("--date", default=REC_DATE, help="override วัน YYYY-MM-DD (ไม่ใส่ = ชื่อไฟล์/metadata/mtime)")
+                   help="single field 'lat,lon' e.g. 13.8119502,100.553166 or a Google Maps link (overrides --lat/--lon)")
+    p.add_argument("--date", default=REC_DATE, help="override date YYYY-MM-DD (blank = filename/metadata/mtime)")
     p.add_argument("--use-metadata", action=argparse.BooleanOptionalAction, default=USE_METADATA,
-                   help="อ่านวัน/พิกัดจาก metadata ไฟล์ (ffprobe + BWF bext + XMP)")
+                   help="read date/coords from file metadata (ffprobe + BWF bext + XMP)")
     p.add_argument("--use-filetime", action="store_true",
-                   help="บังคับใช้เวลาไฟล์ (เริ่มบันทึก) เป็นวันเวลาอัด ข้ามชื่อไฟล์/metadata")
-    p.add_argument("--min-conf", type=float, default=MIN_CONF, help="ความมั่นใจขั้นต่ำ 0-1")
+                   help="force file time (recording start) as the record datetime, skip filename/metadata")
+    p.add_argument("--min-conf", type=float, default=MIN_CONF, help="minimum confidence 0-1")
     p.add_argument("--occurrence-gap", type=float, default=OCCURRENCE_GAP_SEC,
-                   help="ห่างกัน <= ค่านี้ (วินาที) = ครั้งเดียวกัน")
-    p.add_argument("--lead", type=float, default=LEAD_SEC, help="เผื่อก่อนเสียงแรก (วินาที)")
-    p.add_argument("--tail", type=float, default=TAIL_SEC, help="เผื่อหลังเสียงสุดท้าย (วินาที)")
-    p.add_argument("--target-dbfs", type=float, default=TARGET_DBFS, help="ระดับ normalize peak")
-    p.add_argument("--format", default=EXPORT_FORMAT, help="นามสกุล export")
-    p.add_argument("--place", default=None, help="ชื่อสถานที่ (เก็บลง summary)")
+                   help="gap <= this (seconds) = same occurrence")
+    p.add_argument("--lead", type=float, default=LEAD_SEC, help="padding before first sound (seconds)")
+    p.add_argument("--tail", type=float, default=TAIL_SEC, help="padding after last sound (seconds)")
+    p.add_argument("--target-dbfs", type=float, default=TARGET_DBFS, help="normalize peak level")
+    p.add_argument("--format", default=EXPORT_FORMAT, help="export extension")
+    p.add_argument("--place", default=None, help="place name (stored in summary)")
     p.add_argument("--datetime-regex", default=FILENAME_DATETIME_REGEX,
-                   help="regex พาร์สวันเวลาจากชื่อไฟล์")
+                   help="regex to parse datetime from the filename")
     p.add_argument("--mono", action=argparse.BooleanOptionalAction, default=MAKE_MONO,
-                   help="แปลง stereo -> mono")
+                   help="convert stereo -> mono")
     p.add_argument("--spectrogram", action=argparse.BooleanOptionalAction, default=EXPORT_SPECTROGRAM,
-                   help="สร้าง mel-spectrogram .png ต่อคลิป")
+                   help="generate a mel-spectrogram .png per clip")
     p.add_argument("--alt-species", action=argparse.BooleanOptionalAction, default=INCLUDE_ALT_SPECIES,
-                   help="ใส่ชนิดสำรองอันดับ 2-3 ใน summary")
+                   help="include alternate species 2-3 in the summary")
     p.add_argument("--force", action="store_true",
-                   help="ทำซ้ำแม้ไฟล์เคยตัดแล้ว (ปกติจะข้ามไฟล์ที่มีใน summary ของวันนั้น)")
+                   help="redo even if the file was already processed (normally skipped)")
     return p
 
 
@@ -844,7 +844,7 @@ def main():
             i = rest.index("-o")
             group_clips(rest[:i], Path(rest[i + 1]))
         else:
-            print("group: ต้องระบุ -o <ไฟล์ออก>")
+            print("group: must specify -o <output file>")
         return
 
     args = build_parser().parse_args()
@@ -853,7 +853,7 @@ def main():
         if cc:
             args.lat, args.lon = cc
         else:
-            print(f"เตือน: อ่านพิกัดจาก '{args.coords}' ไม่ได้ — ใช้ค่าอื่นแทน")
+            print(f"Warning: could not parse coordinates from '{args.coords}' — using another source")
     input_path = Path(args.audio)
     root_out = Path(args.output)
     root_out.mkdir(parents=True, exist_ok=True)
@@ -862,11 +862,11 @@ def main():
 
     files = collect_inputs(input_path)
     if not files:
-        print(f"ไม่พบไฟล์เสียงที่: {input_path}")
+        print(f"No audio file found at: {input_path}")
         sys.exit(1)
 
-    print(f"จะประมวลผล {len(files)} ไฟล์ | output: {root_out}")
-    print("กำลังโหลดโมเดล BirdNET (ครั้งเดียว) ...")
+    print(f"Processing {len(files)} file(s) | output: {root_out}")
+    print("Loading BirdNET model (once) ...")
     from birdnetlib.analyzer import Analyzer  # lazy: โหลด TensorFlow ตรงนี้
     analyzer = Analyzer()
 
@@ -885,7 +885,7 @@ def main():
                 use_filetime=args.use_filetime,
             )
         except Exception as exc:  # noqa: BLE001  ไฟล์เดียวพังไม่ควรล้มทั้ง batch
-            print(f"  !! ผิดพลาดกับ {audio_path.name}: {exc}")
+            print(f"  !! error with {audio_path.name}: {exc}")
             continue
         if rows and date_folder is not None:
             for r in rows:
@@ -896,14 +896,14 @@ def main():
     # เขียน summary.xlsx ต่อโฟลเดอร์วัน
     for date_folder, rows in rows_by_date.items():
         write_summary(rows, date_folder / "summary.xlsx")
-        print(f"  สรุป {len(rows)} คลิป -> {date_folder / 'summary.xlsx'}")
+        print(f"  summary {len(rows)} clips -> {date_folder / 'summary.xlsx'}")
 
     # สร้าง spectrogram ใน process แยก (กัน TensorFlow ชน native crash)
     if args.spectrogram and rows_by_date:
-        print("\nกำลังสร้าง mel-spectrogram ใน process แยก (กัน TensorFlow ชน) ...")
+        print("\nGenerating mel-spectrograms in a separate process ...")
         run_spectrogram_subprocess(sorted(rows_by_date.keys(), key=str))
 
-    print(f"\nเสร็จแล้ว: {total_clips} คลิป จาก {len(files)} ไฟล์ -> {root_out}")
+    print(f"\nDone: {total_clips} clips from {len(files)} file(s) -> {root_out}")
 
 
 if __name__ == "__main__":

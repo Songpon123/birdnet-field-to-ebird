@@ -1,0 +1,19 @@
+# macOS deps — uses full TensorFlow (ai-edge-litert has NO macOS wheel).
+# birdnetlib auto-falls back from tflite_runtime -> tensorflow.lite, so the
+# tflite_runtime/ shim simply fails to import on macOS and TF is used instead.
+# TensorFlow is left UNPINNED so pip picks the right build per arch:
+#   Apple Silicon (arm64) -> tensorflow 2.21 ; Intel (x86_64) -> tensorflow 2.16
+# numpy/scipy/numba/pandas also unpinned so pip resolves a set compatible with
+# whichever TensorFlow it selects.
+birdnetlib==0.18.1
+tensorflow
+librosa==0.11.0
+resampy==0.4.3
+pydub==0.25.1
+soundfile==0.14.0
+openpyxl==3.1.5
+numpy
+scipy
+numba
+pandas
+matplotlib

@@ -73,7 +73,15 @@ Or the CLI directly:
 | `--occurrence-gap` | 5 | gap larger than this (s) = separate occurrence = separate file |
 | `--lead` `--tail` | 3 / 3 | padding before / after (s) |
 | `--spectrogram` | off | generate mel-spectrograms |
+| `--unknown` | off | also cut sounds BirdNET can't confidently ID into an `_Unknown/` folder (for manual / expert review) |
+| `--unknown-min-conf` | 0.25 | confidence floor for `_Unknown` (below this = ignored as noise) |
 | `--force` | off | re-process even if the file was already cut (normally skipped) |
+
+> **`_Unknown/` folder:** with `--unknown` (GUI: **cut unknown** checkbox), any sound BirdNET
+> detects at `[0.25, min-conf)` confidence — and that doesn't overlap a confident detection —
+> is cut into `<date>/_Unknown/`. Filenames are `<date>_<time>_UNKNOWN_R0.wav`; the summary's
+> *Alt species 1* column holds BirdNET's low-confidence guess (a hint, not an ID). Listen and
+> compare yourself, or send them to an expert.
 
 ## Standalone .exe (run on machines without Python)
 

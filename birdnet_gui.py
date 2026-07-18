@@ -185,11 +185,13 @@ class App:
         self.mono = tk.BooleanVar(value=True)
         self.spec = tk.BooleanVar(value=True)
         self.alt = tk.BooleanVar(value=True)
+        self.unknown = tk.BooleanVar(value=False)
         self.force = tk.BooleanVar(value=False)
         self.filetime = tk.BooleanVar(value=False)
         ttk.Checkbutton(tg, text="to mono", variable=self.mono).pack(side="left", padx=8)
         ttk.Checkbutton(tg, text="mel-spectrogram", variable=self.spec).pack(side="left", padx=8)
         ttk.Checkbutton(tg, text="alt species", variable=self.alt).pack(side="left", padx=8)
+        ttk.Checkbutton(tg, text="cut unknown", variable=self.unknown).pack(side="left", padx=8)
         ttk.Checkbutton(tg, text="force redo", variable=self.force).pack(side="left", padx=8)
         ttk.Checkbutton(tg, text="use file time", variable=self.filetime).pack(side="left", padx=8)
         r += 1
@@ -330,7 +332,8 @@ class App:
                "--target-dbfs", str(self.dbfs.get()),
                "--mono" if self.mono.get() else "--no-mono",
                "--spectrogram" if self.spec.get() else "--no-spectrogram",
-               "--alt-species" if self.alt.get() else "--no-alt-species"]
+               "--alt-species" if self.alt.get() else "--no-alt-species",
+               "--unknown" if self.unknown.get() else "--no-unknown"]
         if self.force.get():
             cmd += ["--force"]
         if self.filetime.get():

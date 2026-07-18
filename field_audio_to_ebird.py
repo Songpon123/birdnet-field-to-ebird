@@ -67,6 +67,8 @@ TARGET_DBFS      = -3.0                           # normalize peak (Macaulay)
 MAKE_MONO        = True                           # stereo -> mono
 EXPORT_SPECTROGRAM = False                        # สร้าง mel-spectrogram .png ต่อคลิป
 INCLUDE_ALT_SPECIES = True                        # ใส่ชนิดสำรองอันดับ 2-3 ใน summary
+CUT_UNKNOWN      = False                          # ตัดเสียงที่ BirdNET มั่นใจไม่พอ ไปเก็บ _Unknown/
+UNKNOWN_MIN_CONF = 0.25                           # floor: conf อยู่ [floor, min_conf) = unknown (ต่ำกว่า floor = ทิ้ง=noise)
 
 # regex พาร์สวันเวลาเริ่มอัดจากชื่อไฟล์ (group: ปี เดือน วัน [ชม.] [นาที] [วินาที])
 # รองรับ separator หลายแบบ: '25681111 1336', '2026-05-22 08_41', '20260608', 'YYYYMMDDHHMMSS'
@@ -618,7 +620,7 @@ def _already_processed(date_folder: Path, source_name: str) -> bool:
 def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg,
                  cfg_lat, cfg_lon, date_override, use_meta, min_conf, gap, lead, tail,
                  target_dbfs, fmt, make_mono, incl_alt, place_arg, dt_regex, force=False,
-                 use_filetime=False):
+                 use_filetime=False, cut_unknown=False, unknown_floor=UNKNOWN_MIN_CONF):
     """
     วิเคราะห์ + ตัดคลิป 1 ไฟล์ คืน (rows, date_folder)
     วัน/พิกัด/สถานที่: argument > ชื่อไฟล์ > metadata ไฟล์ > default
@@ -673,13 +675,19 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
           f"coords {lat},{lon} ({lat_src})"
           + (f" | place {place}" if place else "") + f" | min_conf {min_conf}")
 
+    # เปิด cut_unknown -> analyze ที่ threshold ต่ำ (floor) เพื่อเก็บเสียงที่ BirdNET
+    # มั่นใจไม่พอด้วย แล้วค่อยแยก: conf >= min_conf = ID ได้, [floor, min_conf) = unknown
+    analysis_min = min(min_conf, unknown_floor) if cut_unknown else min_conf
     recording = Recording(analyzer, str(audio_path),
-                          lat=lat, lon=lon, date=filter_date, min_conf=min_conf)
+                          lat=lat, lon=lon, date=filter_date, min_conf=analysis_min)
     print("  analyzing audio (long files may take several minutes) ...")
     recording.analyze()
-    dets = recording.detections
-    print(f"  found {len(dets)} detections")
-    if not dets:
+    raw = recording.detections
+    dets = [d for d in raw if d["confidence"] >= min_conf]
+    low_dets = [d for d in raw if d["confidence"] < min_conf] if cut_unknown else []
+    print(f"  found {len(dets)} detections"
+          + (f" + {len(low_dets)} low-conf -> _Unknown" if cut_unknown else ""))
+    if not dets and not low_dets:
         print("  no confident bird sounds — skipping this file (try lowering --min-conf)")
         return [], None
 
@@ -764,6 +772,70 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
                   f"conf {o['max_conf']:.2f}  peak {peak_dbfs:4.1f}dB"
                   + ("  CLIP!" if clipping else ""))
 
+    # ---- เสียงที่ BirdNET มั่นใจไม่พอ -> _Unknown/ (ไว้ฟัง/ให้ผู้เชี่ยวชาญเทียบเอง) ----
+    if cut_unknown and low_dets:
+        conf_windows = [(d["start_time"], d["end_time"]) for d in dets]
+        unk_items = [(d["start_time"], d["end_time"], d["confidence"]) for d in low_dets]
+        unk_dir = date_folder / "_Unknown"
+        made = 0
+        for o in merge_occurrences(unk_items, gap):
+            # ข้ามถ้าทับช่วง detection ที่มั่นใจแล้ว (น่าจะตัวเดียวกัน/ชนิดสำรอง)
+            if any(o["start"] <= we and o["end"] >= ws for ws, we in conf_windows):
+                continue
+            start_s = max(0.0, o["start"] - lead)
+            end_s = min(total_ms / 1000.0, o["end"] + tail)
+            if end_s <= start_s:
+                continue
+            clip = (_read_segment(audio_path, src, start_s, end_s) if src_mode == "sf"
+                    else src[int(start_s * 1000):int(end_s * 1000)])
+            if clip is None or len(clip) == 0:
+                continue
+            if make_mono and clip.channels > 1:
+                clip = clip.set_channels(1)
+            peak_dbfs = clip.max_dBFS
+            clipping = peak_dbfs >= -0.1
+            snr = estimate_snr(clip)
+            clip = normalize_to(clip, target_dbfs)
+            # BirdNET เดาชนิด conf สูงสุดในช่วงนี้ (แค่ใบ้ ไม่ยืนยัน)
+            guess = max((d for d in low_dets
+                         if d["end_time"] >= o["start"] and d["start_time"] <= o["end"]),
+                        key=lambda d: d["confidence"], default=None)
+            made += 1
+            unk_dir.mkdir(parents=True, exist_ok=True)
+            occ_clock = rec_dt + timedelta(seconds=o["start"])
+            hhmm = occ_clock.strftime("%H%M")
+            base = f"{date_tag}_{hhmm}_UNKNOWN_{DEFAULT_RATING}"
+            out_path = unique_path(unk_dir, base, fmt)
+            _export_clip(clip, out_path, fmt, export_subtype)
+            g_common = guess["common_name"] if guess else ""
+            g_conf = round(guess["confidence"], 3) if guess else ""
+            start_clock = occ_clock.strftime("%H:%M:%S")
+            dur = round(len(clip) / 1000.0, 1)
+            rows.append({
+                "Species (common)": "_Unknown",
+                "Species (scientific)": "",
+                "Occurrence #": made,
+                "Start offset (s)": round(o["start"], 1),
+                "Clock time": start_clock,
+                "End offset (s)": round(o["end"], 1),
+                "Duration (s)": dur,
+                "Max confidence": round(o["max_conf"], 3),
+                "Alt species 1": g_common,       # BirdNET เดา (conf ต่ำ ไม่ยืนยัน)
+                "Alt1 conf": g_conf,
+                "Alt species 2": "",
+                "Alt2 conf": "",
+                "Peak dBFS": round(peak_dbfs, 1),
+                "Clipping": "YES" if clipping else "",
+                "SNR (dB approx)": snr if snr is not None else "",
+                "Provisional rating": "",
+                "Place": place or "",
+                "File": str(out_path.relative_to(date_folder)),
+            })
+            print(f"    -> {'_Unknown':<28} #{made:02d} {start_clock} {dur:4.0f}s "
+                  f"maybe {g_common or '?'} (conf {o['max_conf']:.2f})")
+        if made:
+            print(f"  _Unknown: {made} clips -> {unk_dir}")
+
     del src
     gc.collect()
     return rows, date_folder
@@ -826,6 +898,10 @@ def build_parser():
                    help="generate a mel-spectrogram .png per clip")
     p.add_argument("--alt-species", action=argparse.BooleanOptionalAction, default=INCLUDE_ALT_SPECIES,
                    help="include alternate species 2-3 in the summary")
+    p.add_argument("--unknown", action=argparse.BooleanOptionalAction, default=CUT_UNKNOWN,
+                   help="also cut sounds BirdNET can't confidently ID into an _Unknown/ folder")
+    p.add_argument("--unknown-min-conf", type=float, default=UNKNOWN_MIN_CONF,
+                   help="confidence floor for _Unknown (below this = ignored as noise)")
     p.add_argument("--force", action="store_true",
                    help="redo even if the file was already processed (normally skipped)")
     return p
@@ -883,6 +959,7 @@ def main():
                 fmt=args.format, make_mono=args.mono, incl_alt=args.alt_species,
                 place_arg=args.place, dt_regex=args.datetime_regex, force=args.force,
                 use_filetime=args.use_filetime,
+                cut_unknown=args.unknown, unknown_floor=args.unknown_min_conf,
             )
         except Exception as exc:  # noqa: BLE001  ไฟล์เดียวพังไม่ควรล้มทั้ง batch
             print(f"  !! error with {audio_path.name}: {exc}")

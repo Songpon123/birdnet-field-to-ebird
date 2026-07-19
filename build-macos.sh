@@ -119,7 +119,10 @@ export PATH="$dir:$dir/python/bin:$PATH"     # so ffmpeg/ffprobe next to me are 
 export PYTHONIOENCODING="utf-8"
 # drop the download quarantine flag so Gatekeeper stops blocking (first run)
 xattr -dr com.apple.quarantine "$dir" 2>/dev/null || true
-exec "$dir/python/bin/python3" "$dir/app/birdnet_app.py" "$@"
+# ใช้ python3.12 (binary จริง) ไม่ใช่ python3 (symlink ที่พังตอนแตก zip -> ไปรัน python ระบบ)
+py="$dir/python/bin/python3.12"
+[ -x "$py" ] || py="$dir/python/bin/python3"
+exec "$py" "$dir/app/birdnet_app.py" "$@"
 LAUNCH
 chmod +x "$bundle/BirdNET-eBird.command"
 

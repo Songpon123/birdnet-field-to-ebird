@@ -360,40 +360,88 @@ def estimate_snr(seg: AudioSegment):
     return round(20 * math.log10(sig / noise), 1)
 
 
-def freq_stats(seg: AudioSegment, fmin: float = 200.0, fmax: float = 12000.0):
-    """ความถี่เสียงนกในคลิป (Hz): peak = ความถี่พลังงานสูงสุด, low/high = ช่วงที่มีพลังงาน
-    5-95% (เฉลี่ย magnitude spectrum ราย frame แบบ Hann window). คืน (peak, low, high) เป็น int
-    หรือ (None, None, None) ถ้าสั้น/เงียบเกินไป. gain (normalize) ไม่กระทบค่าความถี่"""
+def freq_stats(seg: AudioSegment, call_start_s=None, call_end_s=None,
+               fmin: float = 150.0, fmax: float = 12000.0):
+    """ความถี่เสียงนก (Hz) แบบเน้นถูกต้อง: คืน (peak, low, high) หรือ (None,None,None).
+    เพื่อให้ตรงเสียงนกจริง ไม่ใช่ noise:
+      1) วิเคราะห์เฉพาะช่วงที่นกร้องจริง [call_start_s, call_end_s] (ถ้าให้มา) ตัด lead/tail
+      2) เอาเฉพาะ frame ที่ "ดัง" (พลังงาน >= 75th percentile) = ตัวเสียงร้อง ไม่ใช่ช่วงเงียบ
+      3) spectral subtraction: ลบ spectrum พื้นหลัง (frame เงียบ/ช่วง padding) ออก = ตัดลม/noise นิ่ง
+    peak = argmax หลังลบ noise, low/high = ช่วง -15 dB รอบ peak. gain ไม่กระทบ"""
     samples = np.array(seg.get_array_of_samples()).astype(np.float64)
     if seg.channels == 2:
         samples = samples.reshape(-1, 2).mean(axis=1)
     n = samples.size
     sr = seg.frame_rate
-    if n < 256 or sr <= 0:
+    win = 2048
+    if n < win or sr <= 0:
         return None, None, None
-    win = 2048 if n >= 2048 else n
-    hop = max(1, win // 2)
+    hop = win // 4
     w = np.hanning(win)
-    frames = [np.abs(np.fft.rfft(samples[i:i + win] * w))
-              for i in range(0, n - win + 1, hop)]
-    if frames:
-        psd = np.mean(frames, axis=0)
+    starts = list(range(0, n - win + 1, hop))
+    mags = np.stack([np.abs(np.fft.rfft(samples[i:i + win] * w)) for i in starts])
+    centers = (np.array(starts) + win / 2.0) / sr        # เวลากลาง frame (วินาที)
+    energy = mags.sum(axis=1)
+
+    # frame ที่อยู่ในช่วงนกร้องจริง vs พื้นหลัง (padding นอกช่วง)
+    if call_start_s is not None and call_end_s is not None and call_end_s > call_start_s:
+        in_call = (centers >= call_start_s) & (centers <= call_end_s)
+        bg = ~in_call
     else:
-        psd = np.abs(np.fft.rfft(samples * np.hanning(n)))
-    freqs = np.fft.rfftfreq(win if frames else n, 1.0 / sr)
+        in_call = np.ones(len(starts), dtype=bool)
+        bg = np.zeros(len(starts), dtype=bool)
+
+    # ในช่วงนก เอาเฉพาะ frame ดัง (>=75th pct) = ตัวเสียงร้อง
+    if in_call.sum() >= 4:
+        thr = np.percentile(energy[in_call], 75)
+        loud = in_call & (energy >= thr)
+    else:
+        loud = in_call
+    if loud.sum() == 0:
+        loud = in_call
+    sig = mags[loud].mean(axis=0)
+
+    # noise reference: frame padding (ถ้ามี) ไม่งั้นใช้ frame เงียบสุด 25%
+    if bg.sum() >= 2:
+        noise = mags[bg].mean(axis=0)
+    else:
+        q = np.percentile(energy, 25)
+        quiet = energy <= q
+        noise = mags[quiet].mean(axis=0) if quiet.sum() >= 2 else np.zeros_like(sig)
+    denoised = np.clip(sig - noise, 0.0, None)
+
+    freqs = np.fft.rfftfreq(win, 1.0 / sr)
     band = (freqs >= fmin) & (freqs <= min(fmax, sr / 2.0))
-    if not band.any():
-        return None, None, None
-    fb, pb = freqs[band], psd[band]
-    if pb.max() <= 0:
-        return None, None, None
-    peak_hz = float(fb[int(np.argmax(pb))])
-    power = pb ** 2
-    csum = np.cumsum(power)
-    csum /= csum[-1]
-    low_hz = float(fb[int(np.searchsorted(csum, 0.05))])
-    high_hz = float(fb[min(int(np.searchsorted(csum, 0.95)), len(fb) - 1)])
-    return round(peak_hz), round(low_hz), round(high_hz)
+    fb = freqs[band]
+    spec = denoised[band]
+    if fb.size == 0 or spec.max() <= 0:
+        spec = sig[band]                      # fallback ถ้า subtract แล้วว่าง
+        if fb.size == 0 or spec.max() <= 0:
+            return None, None, None
+
+    # เลือก peak ที่ "โดดชัด" (tonal = เสียงนก) ไม่ใช่แค่พลังงานสูงสุด (อาจเป็นลม broadband)
+    peak_i = int(np.argmax(spec))
+    spec_db = 20.0 * np.log10(spec / spec.max() + 1e-9)
+    try:
+        from scipy.signal import find_peaks, peak_prominences
+        pk, _ = find_peaks(spec_db, prominence=6.0, distance=3)
+        pk = pk[(spec_db[pk] > -20.0)]        # ต้องดังพอ (ไม่ใช่ยอดจิ๋วใน noise floor)
+        if pk.size:
+            prom = peak_prominences(spec_db, pk)[0]
+            peak_i = int(pk[int(np.argmax(prom))])   # ยอดที่ prominence สูงสุด = tonal สุด
+    except Exception:  # noqa: BLE001  ไม่มี scipy -> ใช้ argmax
+        pass
+    peak_hz = float(fb[peak_i])
+
+    # low/high = ขอบรอบ peak ที่ยังดังกว่า peak - 15 dB (เดินซ้าย/ขวาจนหลุด)
+    thr_db = spec_db[peak_i] - 15.0
+    lo = peak_i
+    while lo > 0 and spec_db[lo - 1] >= thr_db:
+        lo -= 1
+    hi = peak_i
+    while hi < len(spec_db) - 1 and spec_db[hi + 1] >= thr_db:
+        hi += 1
+    return round(peak_hz), round(float(fb[lo])), round(float(fb[hi]))
 
 
 def conf_to_stars(c: float) -> int:
@@ -777,7 +825,7 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
             peak_dbfs = clip.max_dBFS
             clipping = peak_dbfs >= -0.1
             snr = estimate_snr(clip)
-            peak_hz, flo, fhi = freq_stats(clip)
+            peak_hz, flo, fhi = freq_stats(clip, o["start"] - start_s, o["end"] - start_s)
 
             clip = normalize_to(clip, target_dbfs)
 
@@ -844,7 +892,7 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
             peak_dbfs = clip.max_dBFS
             clipping = peak_dbfs >= -0.1
             snr = estimate_snr(clip)
-            peak_hz, flo, fhi = freq_stats(clip)
+            peak_hz, flo, fhi = freq_stats(clip, o["start"] - start_s, o["end"] - start_s)
             clip = normalize_to(clip, target_dbfs)
             # BirdNET เดาชนิด conf สูงสุดในช่วงนี้ (แค่ใบ้ ไม่ยืนยัน)
             guess = max((d for d in low_dets

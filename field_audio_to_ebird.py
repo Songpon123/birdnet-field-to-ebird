@@ -360,6 +360,42 @@ def estimate_snr(seg: AudioSegment):
     return round(20 * math.log10(sig / noise), 1)
 
 
+def freq_stats(seg: AudioSegment, fmin: float = 200.0, fmax: float = 12000.0):
+    """ความถี่เสียงนกในคลิป (Hz): peak = ความถี่พลังงานสูงสุด, low/high = ช่วงที่มีพลังงาน
+    5-95% (เฉลี่ย magnitude spectrum ราย frame แบบ Hann window). คืน (peak, low, high) เป็น int
+    หรือ (None, None, None) ถ้าสั้น/เงียบเกินไป. gain (normalize) ไม่กระทบค่าความถี่"""
+    samples = np.array(seg.get_array_of_samples()).astype(np.float64)
+    if seg.channels == 2:
+        samples = samples.reshape(-1, 2).mean(axis=1)
+    n = samples.size
+    sr = seg.frame_rate
+    if n < 256 or sr <= 0:
+        return None, None, None
+    win = 2048 if n >= 2048 else n
+    hop = max(1, win // 2)
+    w = np.hanning(win)
+    frames = [np.abs(np.fft.rfft(samples[i:i + win] * w))
+              for i in range(0, n - win + 1, hop)]
+    if frames:
+        psd = np.mean(frames, axis=0)
+    else:
+        psd = np.abs(np.fft.rfft(samples * np.hanning(n)))
+    freqs = np.fft.rfftfreq(win if frames else n, 1.0 / sr)
+    band = (freqs >= fmin) & (freqs <= min(fmax, sr / 2.0))
+    if not band.any():
+        return None, None, None
+    fb, pb = freqs[band], psd[band]
+    if pb.max() <= 0:
+        return None, None, None
+    peak_hz = float(fb[int(np.argmax(pb))])
+    power = pb ** 2
+    csum = np.cumsum(power)
+    csum /= csum[-1]
+    low_hz = float(fb[int(np.searchsorted(csum, 0.05))])
+    high_hz = float(fb[min(int(np.searchsorted(csum, 0.95)), len(fb) - 1)])
+    return round(peak_hz), round(low_hz), round(high_hz)
+
+
 def conf_to_stars(c: float) -> int:
     """provisional rating หยาบ ๆ จาก confidence (1-4, ไม่ให้ 5 เพราะเป็น auto)"""
     if c >= 0.9:
@@ -517,9 +553,7 @@ def _load_clip(path: Path):
         info = sf.info(str(path))
         dtype, sw, sub = _depth(info.subtype)
         data, _ = sf.read(str(path), dtype=dtype, always_2d=True)
-        seg = AudioSegment(data.tobytes(), frame_rate=info.samplerate,
-                           sample_width=sw, channels=data.shape[1])
-        return seg, sub
+        return _seg_from_sf(data, info.samplerate, sw), sub
     except Exception:  # noqa: BLE001
         return AudioSegment.from_file(str(path)), None
 
@@ -554,15 +588,27 @@ def group_clips(wav_paths, out_path: Path, silence_ms=1000, target_dbfs=-3.0, tr
 
 def _depth(subtype):
     """คง bit depth เดิม -> (read_dtype, sample_width, export_subtype). pydub ไม่รับ 3-byte
-    จึงอ่าน 24/32-bit เป็น int32 แล้ว export กลับเป็น PCM_24/PCM_32 ด้วย soundfile"""
+    จึงอ่าน 24/32-bit เป็น int32 แล้ว export กลับเป็น PCM_24/PCM_32 ด้วย soundfile.
+    FLOAT/DOUBLE ต้องอ่านเป็น float32 แล้ว scale เป็น int32 เอง — soundfile ไม่ scale
+    float->int ให้ (มันปัดค่า float [-1,1] เป็น 0 = คลิปเงียบสนิท) ดู _seg_from_sf"""
     s = (subtype or "").upper()
     if "PCM_24" in s:
         return "int32", 4, "PCM_24"
     if "PCM_32" in s:
         return "int32", 4, "PCM_32"
     if "FLOAT" in s or "DOUBLE" in s:
-        return "int32", 4, "PCM_24"        # float -> 24-bit
+        return "float32", 4, "PCM_24"      # อ่าน float แล้ว scale -> 24-bit
     return "int16", 2, "PCM_16"            # 16-bit, mp3, ogg ฯลฯ
+
+
+def _seg_from_sf(data, sr, sw):
+    """สร้าง AudioSegment จาก array ที่ soundfile อ่านมา — ถ้าเป็น float [-1,1] scale เป็น
+    int32 ก่อน (pydub รับแต่ int; soundfile ไม่ scale float->int ให้)"""
+    if str(data.dtype).startswith("float"):
+        data = (np.clip(data, -1.0, 1.0) * 2147483647.0).astype("<i4")
+        sw = 4
+    return AudioSegment(np.ascontiguousarray(data).tobytes(), frame_rate=sr,
+                        sample_width=sw, channels=data.shape[1])
 
 
 def _open_source(path: Path):
@@ -589,8 +635,7 @@ def _read_segment(path: Path, info, start_s: float, end_s: float):
         return None
     dtype, sw, _ = _depth(info.subtype)
     data, _meta = sf.read(str(path), start=s, stop=e, dtype=dtype, always_2d=True)
-    return AudioSegment(data.tobytes(), frame_rate=sr,
-                        sample_width=sw, channels=data.shape[1])
+    return _seg_from_sf(data, sr, sw)
 
 
 def _export_clip(clip: AudioSegment, out_path: Path, fmt: str, subtype):
@@ -732,6 +777,7 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
             peak_dbfs = clip.max_dBFS
             clipping = peak_dbfs >= -0.1
             snr = estimate_snr(clip)
+            peak_hz, flo, fhi = freq_stats(clip)
 
             clip = normalize_to(clip, target_dbfs)
 
@@ -764,6 +810,9 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
                 "Peak dBFS": round(peak_dbfs, 1),
                 "Clipping": "YES" if clipping else "",
                 "SNR (dB approx)": snr if snr is not None else "",
+                "Peak freq (Hz)": peak_hz if peak_hz is not None else "",
+                "Freq low (Hz)": flo if flo is not None else "",
+                "Freq high (Hz)": fhi if fhi is not None else "",
                 "Provisional rating": conf_to_stars(o["max_conf"]),
                 "Place": place or "",
                 "File": str(out_path.relative_to(date_folder)),
@@ -795,6 +844,7 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
             peak_dbfs = clip.max_dBFS
             clipping = peak_dbfs >= -0.1
             snr = estimate_snr(clip)
+            peak_hz, flo, fhi = freq_stats(clip)
             clip = normalize_to(clip, target_dbfs)
             # BirdNET เดาชนิด conf สูงสุดในช่วงนี้ (แค่ใบ้ ไม่ยืนยัน)
             guess = max((d for d in low_dets
@@ -827,6 +877,9 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
                 "Peak dBFS": round(peak_dbfs, 1),
                 "Clipping": "YES" if clipping else "",
                 "SNR (dB approx)": snr if snr is not None else "",
+                "Peak freq (Hz)": peak_hz if peak_hz is not None else "",
+                "Freq low (Hz)": flo if flo is not None else "",
+                "Freq high (Hz)": fhi if fhi is not None else "",
                 "Provisional rating": "",
                 "Place": place or "",
                 "File": str(out_path.relative_to(date_folder)),

@@ -69,6 +69,7 @@ EXPORT_SPECTROGRAM = False                        # สร้าง mel-spectrog
 INCLUDE_ALT_SPECIES = True                        # ใส่ชนิดสำรองอันดับ 2-3 ใน summary
 CUT_UNKNOWN      = False                          # ตัดเสียงที่ BirdNET มั่นใจไม่พอ ไปเก็บ _Unknown/
 UNKNOWN_MIN_CONF = 0.25                           # floor: conf อยู่ [floor, min_conf) = unknown (ต่ำกว่า floor = ทิ้ง=noise)
+HIGHPASS_HZ      = 0                              # high-pass filter cutoff (Hz); 0 = ปิด. ตัดเสียงต่ำ (ลม/รถ/hum) เมื่อจำเป็น (คู่มือ eBird แนะ <=250)
 
 # regex พาร์สวันเวลาเริ่มอัดจากชื่อไฟล์ (group: ปี เดือน วัน [ชม.] [นาที] [วินาที])
 # รองรับ separator หลายแบบ: '25681111 1336', '2026-05-22 08_41', '20260608', 'YYYYMMDDHHMMSS'
@@ -444,6 +445,33 @@ def freq_stats(seg: AudioSegment, call_start_s=None, call_end_s=None,
     return round(peak_hz), round(float(fb[lo])), round(float(fb[hi]))
 
 
+def apply_highpass(seg: AudioSegment, cutoff_hz):
+    """high-pass filter (Butterworth order 4, zero-phase) ตัดเสียงต่ำกว่า cutoff_hz
+    (ลม/รถ/hum). cutoff_hz<=0 หรือไม่มี scipy -> คืน seg เดิม. คง bit depth/ch เดิม"""
+    if not cutoff_hz or cutoff_hz <= 0:
+        return seg
+    sr = seg.frame_rate
+    nyq = sr / 2.0
+    if cutoff_hz >= nyq:
+        return seg
+    try:
+        from scipy.signal import butter, sosfiltfilt
+    except Exception:  # noqa: BLE001  ไม่มี scipy -> ข้าม
+        return seg
+    samples = np.array(seg.get_array_of_samples())
+    dt = samples.dtype
+    arr = samples.astype(np.float64)
+    ch = seg.channels
+    if ch > 1:
+        arr = arr.reshape(-1, ch)
+    sos = butter(4, cutoff_hz / nyq, btype="highpass", output="sos")
+    arr = sosfiltfilt(sos, arr, axis=0)
+    maxv = float(1 << (8 * seg.sample_width - 1)) - 1
+    arr = np.clip(arr, -maxv, maxv).astype(dt)
+    return AudioSegment(np.ascontiguousarray(arr).tobytes(), frame_rate=sr,
+                        sample_width=seg.sample_width, channels=ch)
+
+
 def conf_to_stars(c: float) -> int:
     """provisional rating หยาบ ๆ จาก confidence (1-4, ไม่ให้ 5 เพราะเป็น auto)"""
     if c >= 0.9:
@@ -713,7 +741,8 @@ def _already_processed(date_folder: Path, source_name: str) -> bool:
 def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg,
                  cfg_lat, cfg_lon, date_override, use_meta, min_conf, gap, lead, tail,
                  target_dbfs, fmt, make_mono, incl_alt, place_arg, dt_regex, force=False,
-                 use_filetime=False, cut_unknown=False, unknown_floor=UNKNOWN_MIN_CONF):
+                 use_filetime=False, cut_unknown=False, unknown_floor=UNKNOWN_MIN_CONF,
+                 highpass_hz=HIGHPASS_HZ):
     """
     วิเคราะห์ + ตัดคลิป 1 ไฟล์ คืน (rows, date_folder)
     วัน/พิกัด/สถานที่: argument > ชื่อไฟล์ > metadata ไฟล์ > default
@@ -820,6 +849,7 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
                 continue
             if make_mono and clip.channels > 1:
                 clip = clip.set_channels(1)
+            clip = apply_highpass(clip, highpass_hz)   # ตัดเสียงต่ำ (ลม) ถ้าเปิด
 
             # วัดคุณภาพ "ก่อน" normalize (peak จริงของเสียง)
             peak_dbfs = clip.max_dBFS
@@ -889,6 +919,7 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
                 continue
             if make_mono and clip.channels > 1:
                 clip = clip.set_channels(1)
+            clip = apply_highpass(clip, highpass_hz)   # ตัดเสียงต่ำ (ลม) ถ้าเปิด
             peak_dbfs = clip.max_dBFS
             clipping = peak_dbfs >= -0.1
             snr = estimate_snr(clip)
@@ -1003,6 +1034,8 @@ def build_parser():
                    help="also cut sounds BirdNET can't confidently ID into an _Unknown/ folder")
     p.add_argument("--unknown-min-conf", type=float, default=UNKNOWN_MIN_CONF,
                    help="confidence floor for _Unknown (below this = ignored as noise)")
+    p.add_argument("--highpass", type=float, default=HIGHPASS_HZ,
+                   help="high-pass filter cutoff Hz to cut low rumble/wind (0 = off; eBird suggests <=250)")
     p.add_argument("--force", action="store_true",
                    help="redo even if the file was already processed (normally skipped)")
     return p
@@ -1061,6 +1094,7 @@ def main():
                 place_arg=args.place, dt_regex=args.datetime_regex, force=args.force,
                 use_filetime=args.use_filetime,
                 cut_unknown=args.unknown, unknown_floor=args.unknown_min_conf,
+                highpass_hz=args.highpass,
             )
         except Exception as exc:  # noqa: BLE001  ไฟล์เดียวพังไม่ควรล้มทั้ง batch
             print(f"  !! error with {audio_path.name}: {exc}")

@@ -76,6 +76,7 @@ Or the CLI directly:
 | `--spectrogram` | off | generate mel-spectrograms |
 | `--unknown` | off | also cut sounds BirdNET can't confidently ID into an `_Unknown/` folder (for manual / expert review) |
 | `--unknown-min-conf` | 0.25 | confidence floor for `_Unknown` (below this = ignored as noise) |
+| `--highpass` | 0 (off) | high-pass filter cutoff Hz — cut low rumble/wind/hum; use sparingly (eBird suggests ≤250) |
 | `--force` | off | re-process even if the file was already cut (normally skipped) |
 
 > **`_Unknown/` folder:** with `--unknown` (GUI: **cut unknown** checkbox), any sound BirdNET

@@ -166,7 +166,11 @@ class App:
         ttk.Label(grid2, text="min_conf").grid(row=0, column=2, sticky="w")
         self.min_conf = tk.DoubleVar(value=0.5)
         ttk.Spinbox(grid2, from_=0.0, to=1.0, increment=0.05, width=6,
-                    textvariable=self.min_conf).grid(row=0, column=3, padx=2)
+                    textvariable=self.min_conf).grid(row=0, column=3, padx=(2, 14))
+        ttk.Label(grid2, text="high-pass Hz (0=off)").grid(row=0, column=4, sticky="w")
+        self.highpass = tk.DoubleVar(value=0)
+        ttk.Spinbox(grid2, from_=0, to=2000, increment=50, width=7,
+                    textvariable=self.highpass).grid(row=0, column=5, padx=2)
         r += 1
 
         grid3 = ttk.Frame(frm); grid3.grid(row=r, column=0, columnspan=3, sticky="ew", **pad)
@@ -333,7 +337,8 @@ class App:
                "--mono" if self.mono.get() else "--no-mono",
                "--spectrogram" if self.spec.get() else "--no-spectrogram",
                "--alt-species" if self.alt.get() else "--no-alt-species",
-               "--unknown" if self.unknown.get() else "--no-unknown"]
+               "--unknown" if self.unknown.get() else "--no-unknown",
+               "--highpass", str(self.highpass.get())]
         if self.force.get():
             cmd += ["--force"]
         if self.filetime.get():

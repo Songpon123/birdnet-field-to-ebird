@@ -481,6 +481,50 @@ def xc_url(scientific) -> str:
     return f"https://xeno-canto.org/species/{parts[0]}-{parts[1]}"
 
 
+def xc_download_refs(gen, sp, common, key, country, n, dest_root: Path) -> int:
+    """โหลดเสียงอ้างอิง Xeno-Canto v3 (คุณภาพ A) ของชนิดนี้ n ไฟล์ -> dest_root/<common>/
+    ไว้ฟังเทียบ recheck ID. คืนจำนวนไฟล์ที่ได้. error/ไม่มีเน็ต -> คืน 0 (ไม่ล้ม batch)"""
+    import requests
+    base = "https://xeno-canto.org/api/3/recordings"
+
+    def _q(qstr):
+        r = requests.get(base, params={"query": qstr, "key": key,
+                                       "per_page": max(n * 2, 5)}, timeout=30)
+        r.raise_for_status()
+        return r.json().get("recordings", []) or []
+
+    q = f"gen:{gen} sp:{sp} q:A"
+    try:
+        recs = _q(q + (f" cnt:{country}" if country else ""))
+        if not recs and country:
+            recs = _q(q)                     # ไม่มีในประเทศ -> ทั่วโลก
+    except Exception as exc:  # noqa: BLE001
+        print(f"    (XC: ดึงรายการ {common} ไม่ได้: {exc})")
+        return 0
+    dest = dest_root / sanitize(common)
+    got = 0
+    for rec in recs[:n]:
+        url = rec.get("file")
+        name = sanitize(rec.get("file-name") or f"XC{rec.get('id')}.mp3")
+        if not url:
+            continue
+        fp = dest / name
+        if fp.exists():
+            got += 1
+            continue
+        try:
+            dest.mkdir(parents=True, exist_ok=True)
+            with requests.get(url, timeout=90, stream=True) as resp:
+                resp.raise_for_status()
+                with open(fp, "wb") as f:
+                    for chunk in resp.iter_content(8192):
+                        f.write(chunk)
+            got += 1
+        except Exception as exc:  # noqa: BLE001
+            print(f"    (XC: โหลด {name} ไม่ได้: {exc})")
+    return got
+
+
 def conf_to_stars(c: float) -> int:
     """provisional rating หยาบ ๆ จาก confidence (1-4, ไม่ให้ 5 เพราะเป็น auto)"""
     if c >= 0.9:
@@ -1047,6 +1091,11 @@ def build_parser():
                    help="confidence floor for _Unknown (below this = ignored as noise)")
     p.add_argument("--highpass", type=float, default=HIGHPASS_HZ,
                    help="high-pass filter cutoff Hz to cut low rumble/wind (0 = off; eBird suggests <=250)")
+    p.add_argument("--xc-key", default=os.environ.get("XC_API_KEY", ""),
+                   help="Xeno-Canto v3 API key (or env XC_API_KEY) — enables downloading reference audio")
+    p.add_argument("--xc-country", default="",
+                   help="filter XC reference audio by country e.g. thailand (blank = worldwide)")
+    p.add_argument("--xc-count", type=int, default=2, help="XC reference recordings to fetch per species")
     p.add_argument("--force", action="store_true",
                    help="redo even if the file was already processed (normally skipped)")
     return p
@@ -1125,6 +1174,23 @@ def main():
     if args.spectrogram and rows_by_date:
         print("\nGenerating mel-spectrograms in a separate process ...")
         run_spectrogram_subprocess(sorted(rows_by_date.keys(), key=str))
+
+    # ดึงเสียงอ้างอิง Xeno-Canto ต่อชนิด (ถ้าให้ key) -> _reference/<ชนิด>/ ไว้ฟังเทียบ
+    if args.xc_key:
+        print("\nDownloading Xeno-Canto reference audio ...")
+        ref_root = root_out / "_reference"
+        seen = set()
+        for rows in rows_by_date.values():
+            for r in rows:
+                common = r.get("Species (common)")
+                sci = str(r.get("Species (scientific)") or "").split()
+                if len(sci) >= 2 and common and common not in seen:
+                    seen.add(common)
+                    got = xc_download_refs(sci[0], sci[1], common, args.xc_key,
+                                           args.xc_country, args.xc_count, ref_root)
+                    print(f"  XC {common}: {got} file(s)")
+        if seen:
+            print(f"  reference audio -> {ref_root}")
 
     print(f"\nDone: {total_clips} clips from {len(files)} file(s) -> {root_out}")
 

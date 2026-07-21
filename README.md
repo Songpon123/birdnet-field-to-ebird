@@ -78,7 +78,16 @@ Or the CLI directly:
 | `--unknown` | off | also cut sounds BirdNET can't confidently ID into an `_Unknown/` folder (for manual / expert review) |
 | `--unknown-min-conf` | 0.25 | confidence floor for `_Unknown` (below this = ignored as noise) |
 | `--highpass` | 0 (off) | high-pass filter cutoff Hz — cut low rumble/wind/hum; use sparingly (eBird suggests ≤250) |
+| `--xc-key` | (env `XC_API_KEY`) | Xeno-Canto v3 API key — enables downloading reference audio per species |
+| `--xc-country` | (worldwide) | filter XC reference audio by country, e.g. `thailand` |
+| `--xc-count` | 2 | XC reference recordings to fetch per species |
 | `--force` | off | re-process even if the file was already cut (normally skipped) |
+
+> **Xeno-Canto recheck.** The summary always has a **Xeno-Canto link** column (no key needed —
+> click to listen on the web). If you also give an **API key** (free, from
+> [xeno-canto.org/account](https://xeno-canto.org/account); GUI: *Xeno-Canto key* field), it
+> downloads the top quality-A recordings per species into `<output>/_reference/<species>/` so you
+> can A/B them against your clips. The key is read from the flag/env only — never stored in the repo.
 
 > **`_Unknown/` folder:** with `--unknown` (GUI: **cut unknown** checkbox), any sound BirdNET
 > detects at `[0.25, min-conf)` confidence — and that doesn't overlap a confident detection —

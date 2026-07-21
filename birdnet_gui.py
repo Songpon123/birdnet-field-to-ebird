@@ -200,6 +200,16 @@ class App:
         ttk.Checkbutton(tg, text="use file time", variable=self.filetime).pack(side="left", padx=8)
         r += 1
 
+        # ---- Xeno-Canto reference download (optional) ----
+        xcf = ttk.Frame(frm); xcf.grid(row=r, column=0, columnspan=3, sticky="ew", **pad)
+        self.xc_key = tk.StringVar(value="")
+        self.xc_country = tk.StringVar(value="")
+        ttk.Label(xcf, text="Xeno-Canto key (blank = off, link only)").grid(row=0, column=0, sticky="w")
+        ttk.Entry(xcf, textvariable=self.xc_key, width=32, show="•").grid(row=0, column=1, padx=(2, 14))
+        ttk.Label(xcf, text="country (e.g. thailand)").grid(row=0, column=2, sticky="w")
+        ttk.Entry(xcf, textvariable=self.xc_country, width=14).grid(row=0, column=3, padx=2)
+        r += 1
+
         self.run_btn = ttk.Button(frm, text="▶  Analyze", command=self.run)
         self.run_btn.grid(row=r, column=0, sticky="w", **pad)
 
@@ -349,6 +359,10 @@ class App:
             cmd += ["--date", self.date.get().strip()]
         if self.place.get().strip():
             cmd += ["--place", self.place.get().strip()]
+        if str(self.xc_key.get()).strip():
+            cmd += ["--xc-key", str(self.xc_key.get()).strip()]
+            if str(self.xc_country.get()).strip():
+                cmd += ["--xc-country", str(self.xc_country.get()).strip()]
         self._start(cmd, self.run_btn)
 
     def merge_run(self):

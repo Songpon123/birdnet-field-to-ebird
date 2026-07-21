@@ -472,6 +472,15 @@ def apply_highpass(seg: AudioSegment, cutoff_hz):
                         sample_width=seg.sample_width, channels=ch)
 
 
+def xc_url(scientific) -> str:
+    """ลิงก์หน้า xeno-canto ของชนิดนั้น (เสียงอ้างอิงไว้ recheck/เทียบ ID ด้วยหูเอง)
+    'Genus species' -> https://xeno-canto.org/species/Genus-species"""
+    parts = str(scientific or "").strip().split()
+    if len(parts) < 2:
+        return ""
+    return f"https://xeno-canto.org/species/{parts[0]}-{parts[1]}"
+
+
 def conf_to_stars(c: float) -> int:
     """provisional rating หยาบ ๆ จาก confidence (1-4, ไม่ให้ 5 เพราะเป็น auto)"""
     if c >= 0.9:
@@ -875,6 +884,7 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
             rows.append({
                 "Species (common)": common,
                 "Species (scientific)": sci,
+                "Xeno-Canto (ref audio)": xc_url(sci),
                 "Occurrence #": idx,
                 "Start offset (s)": round(o["start"], 1),
                 "Clock time": start_clock,
@@ -943,6 +953,7 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
             rows.append({
                 "Species (common)": "_Unknown",
                 "Species (scientific)": "",
+                "Xeno-Canto (ref audio)": xc_url(guess["scientific_name"]) if guess else "",
                 "Occurrence #": made,
                 "Start offset (s)": round(o["start"], 1),
                 "Clock time": start_clock,

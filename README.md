@@ -10,7 +10,8 @@ Cut bird clips from long field recordings with **BirdNET**, ready to upload to
 - Standard ML filenames: `YYYY.MM.DD_HHMM_Genus.species_R0.wav`, foldered by day / species
 - **Preserves quality** (sample rate + bit depth: 24-bit stays 24-bit), downmix to mono, normalize −3 dB
 - `summary.xlsx`, one row per clip (confidence, alternate species, peak dBFS, clipping flag, rough SNR,
-  **call frequency in Hz** — peak / low / high — …)
+  **call frequency in Hz** — peak / low / high — plus a **Xeno-Canto link** to that species'
+  reference recordings so you can recheck the ID by ear, …)
 - Optional mel-spectrograms for visual review
 
 Three ways to run: **Tkinter GUI** (desktop window), **Streamlit** (browser), **CLI**.

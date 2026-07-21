@@ -91,9 +91,10 @@ Or the CLI directly:
 
 > **`_Unknown/` folder:** with `--unknown` (GUI: **cut unknown** checkbox), any sound BirdNET
 > detects at `[0.25, min-conf)` confidence — and that doesn't overlap a confident detection —
-> is cut into `<date>/_Unknown/`. Filenames are `<date>_<time>_UNKNOWN_R0.wav`; the summary's
-> *Alt species 1* column holds BirdNET's low-confidence guess (a hint, not an ID). Listen and
-> compare yourself, or send them to an expert.
+> is cut into `<date>/_Unknown/`. Filenames are `<date>_<time>_UNKNOWN_R0.wav`. To help you narrow
+> it down, the summary lists BirdNET's **top-3 candidate species** with confidences in the
+> *Alt species 1/2/3* columns (hints, not IDs), plus a Xeno-Canto link — and, with an API key,
+> downloads that species' reference audio. Listen and compare, or send them to an expert.
 
 ## Standalone .exe (run on machines without Python)
 

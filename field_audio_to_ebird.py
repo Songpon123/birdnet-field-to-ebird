@@ -324,6 +324,19 @@ def merge_occurrences(items, gap_sec):
     return occ
 
 
+def top_candidates(start, end, dets, n=3):
+    """top-N ชนิดที่ BirdNET เดา (conf สูงสุดต่อชนิด) ที่ทับช่วง [start,end] — ไว้ช่วย
+    แคบตัวเลือก ID คลิป _Unknown. dets = list ของ dict. คืน [(common, scientific, conf), ...]"""
+    cand = {}
+    for d in dets:
+        if d["end_time"] >= start and d["start_time"] <= end:
+            c = d["common_name"]
+            if c not in cand or d["confidence"] > cand[c][1]:
+                cand[c] = (d["scientific_name"], d["confidence"])
+    return [(common, sci, conf) for common, (sci, conf)
+            in sorted(cand.items(), key=lambda x: -x[1][1])[:n]]
+
+
 def alt_species_for(start, end, all_dets, primary_common, topn=2):
     """ชนิดสำรอง: detection ของชนิดอื่นที่ทับช่วงเวลาเดียวกัน เอา conf สูงสุดต่อชนิด"""
     cand = {}
@@ -919,9 +932,10 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
             out_path = unique_path(sp_dir, base, fmt)
             _export_clip(clip, out_path, fmt, export_subtype)
 
-            alts = alt_species_for(o["start"], o["end"], all_dets, common) if incl_alt else []
+            alts = alt_species_for(o["start"], o["end"], all_dets, common, topn=3) if incl_alt else []
             alt1 = alts[0] if len(alts) >= 1 else ("", "")
             alt2 = alts[1] if len(alts) >= 2 else ("", "")
+            alt3 = alts[2] if len(alts) >= 3 else ("", "")
 
             start_clock = occ_clock.strftime("%H:%M:%S")
             dur = round(len(clip) / 1000.0, 1)
@@ -939,6 +953,8 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
                 "Alt1 conf": round(alt1[1], 3) if alt1[1] != "" else "",
                 "Alt species 2": alt2[0],
                 "Alt2 conf": round(alt2[1], 3) if alt2[1] != "" else "",
+                "Alt species 3": alt3[0],
+                "Alt3 conf": round(alt3[1], 3) if alt3[1] != "" else "",
                 "Peak dBFS": round(peak_dbfs, 1),
                 "Clipping": "YES" if clipping else "",
                 "SNR (dB approx)": snr if snr is not None else "",
@@ -979,10 +995,11 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
             snr = estimate_snr(clip)
             peak_hz, flo, fhi = freq_stats(clip, o["start"] - start_s, o["end"] - start_s)
             clip = normalize_to(clip, target_dbfs)
-            # BirdNET เดาชนิด conf สูงสุดในช่วงนี้ (แค่ใบ้ ไม่ยืนยัน)
-            guess = max((d for d in low_dets
-                         if d["end_time"] >= o["start"] and d["start_time"] <= o["end"]),
-                        key=lambda d: d["confidence"], default=None)
+            # top-3 ชนิดที่ BirdNET เดาในช่วงนี้ (แค่ตัวเลือกให้คนฟังเทียบ ไม่ยืนยัน)
+            cands = top_candidates(o["start"], o["end"], low_dets, 3)
+            c1 = cands[0] if len(cands) >= 1 else ("", "", "")
+            c2 = cands[1] if len(cands) >= 2 else ("", "", "")
+            c3 = cands[2] if len(cands) >= 3 else ("", "", "")
             made += 1
             unk_dir.mkdir(parents=True, exist_ok=True)
             occ_clock = rec_dt + timedelta(seconds=o["start"])
@@ -990,24 +1007,26 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
             base = f"{date_tag}_{hhmm}_UNKNOWN_{DEFAULT_RATING}"
             out_path = unique_path(unk_dir, base, fmt)
             _export_clip(clip, out_path, fmt, export_subtype)
-            g_common = guess["common_name"] if guess else ""
-            g_conf = round(guess["confidence"], 3) if guess else ""
             start_clock = occ_clock.strftime("%H:%M:%S")
             dur = round(len(clip) / 1000.0, 1)
             rows.append({
                 "Species (common)": "_Unknown",
-                "Species (scientific)": "",
-                "Xeno-Canto (ref audio)": xc_url(guess["scientific_name"]) if guess else "",
+                # ชื่อวิทย์ = ตัวเลือกอันดับ 1 (ไว้ทำลิงก์/โหลดเสียง XC) ไม่ใช่การยืนยัน
+                "Species (scientific)": c1[1],
+                "Xeno-Canto (ref audio)": xc_url(c1[1]),
                 "Occurrence #": made,
                 "Start offset (s)": round(o["start"], 1),
                 "Clock time": start_clock,
                 "End offset (s)": round(o["end"], 1),
                 "Duration (s)": dur,
                 "Max confidence": round(o["max_conf"], 3),
-                "Alt species 1": g_common,       # BirdNET เดา (conf ต่ำ ไม่ยืนยัน)
-                "Alt1 conf": g_conf,
-                "Alt species 2": "",
-                "Alt2 conf": "",
+                # top-3 ตัวเลือกที่ BirdNET เดา (conf ต่ำ ไม่ยืนยัน — ฟังเทียบเอง)
+                "Alt species 1": c1[0],
+                "Alt1 conf": round(c1[2], 3) if c1[2] != "" else "",
+                "Alt species 2": c2[0],
+                "Alt2 conf": round(c2[2], 3) if c2[2] != "" else "",
+                "Alt species 3": c3[0],
+                "Alt3 conf": round(c3[2], 3) if c3[2] != "" else "",
                 "Peak dBFS": round(peak_dbfs, 1),
                 "Clipping": "YES" if clipping else "",
                 "SNR (dB approx)": snr if snr is not None else "",
@@ -1018,8 +1037,9 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
                 "Place": place or "",
                 "File": str(out_path.relative_to(date_folder)),
             })
+            cand_txt = " | ".join(f"{c[0]} {c[2]:.2f}" for c in cands) or "?"
             print(f"    -> {'_Unknown':<28} #{made:02d} {start_clock} {dur:4.0f}s "
-                  f"maybe {g_common or '?'} (conf {o['max_conf']:.2f})")
+                  f"maybe: {cand_txt}")
         if made:
             print(f"  _Unknown: {made} clips -> {unk_dir}")
 
@@ -1182,13 +1202,20 @@ def main():
         seen = set()
         for rows in rows_by_date.values():
             for r in rows:
-                common = r.get("Species (common)")
                 sci = str(r.get("Species (scientific)") or "").split()
-                if len(sci) >= 2 and common and common not in seen:
-                    seen.add(common)
-                    got = xc_download_refs(sci[0], sci[1], common, args.xc_key,
-                                           args.xc_country, args.xc_count, ref_root)
-                    print(f"  XC {common}: {got} file(s)")
+                if len(sci) < 2:
+                    continue
+                key = f"{sci[0]} {sci[1]}"          # dedup ต่อ "ชนิด" ไม่ใช่ต่อแถว
+                if key in seen:
+                    continue
+                seen.add(key)
+                # แถว _Unknown ใช้ชื่อชนิดที่เดา (Alt species 1) เป็นชื่อโฟลเดอร์
+                label = r.get("Species (common)")
+                if not label or label == "_Unknown":
+                    label = r.get("Alt species 1") or key
+                got = xc_download_refs(sci[0], sci[1], label, args.xc_key,
+                                       args.xc_country, args.xc_count, ref_root)
+                print(f"  XC {label}: {got} file(s)")
         if seen:
             print(f"  reference audio -> {ref_root}")
 

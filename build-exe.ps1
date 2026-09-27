@@ -67,10 +67,10 @@ Copy-Item -Force (Join-Path $distL "BirdNET-eBird.exe") (Join-Path $bundle "Bird
 # 5) copy the program code + shim
 $app = Join-Path $bundle "app"
 New-Item -ItemType Directory -Force -Path (Join-Path $app "tflite_runtime") | Out-Null
-Copy-Item -Force (Join-Path $here "birdnet_app.py")           $app
-Copy-Item -Force (Join-Path $here "field_audio_to_ebird.py")  $app
-Copy-Item -Force (Join-Path $here "birdnet_gui.py")           $app
-Copy-Item -Force (Join-Path $here "tflite_runtime\*.py")      (Join-Path $app "tflite_runtime")
+Copy-Item -Force (Join-Path $here "app\*.py")                 $app
+Copy-Item -Force (Join-Path $here "app\tflite_runtime\*.py") (Join-Path $app "tflite_runtime")
+New-Item -ItemType Directory -Force -Path (Join-Path $app "assets") | Out-Null
+Copy-Item -Force (Join-Path $here "app\assets\app_icon.png") (Join-Path $app "assets")
 
 # 6) copy ffmpeg + ffprobe (resolve the winget shim to the real file)
 $ff = Get-Command ffmpeg -ErrorAction SilentlyContinue

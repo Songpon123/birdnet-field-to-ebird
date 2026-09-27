@@ -24,6 +24,14 @@ BirdNET_eBird/
 *.m4a
 *.xlsx
 *.png
+!app/assets/*.png
+
+# Portable runtime and local backups are built artifacts, not source code
+python/
+_backup-before-upgrade/
+ffmpeg
+ffprobe
+*.zip
 
 # misc
 *.log

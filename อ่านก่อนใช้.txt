@@ -1,83 +1,110 @@
-﻿============================================================
-  BirdNET  →  eBird  clipper      อ่านก่อนใช้ / READ ME FIRST
+============================================================
+  BirdNET -> eBird clipper (macOS)     อ่านก่อนใช้ / READ ME FIRST
 ============================================================
 
-โปรแกรมช่วยตัดคลิปเสียงนกจากไฟล์อัดสนามยาว ๆ ด้วย BirdNET
-เตรียมไฟล์ให้พร้อมอัปขึ้น eBird / Macaulay Library
+วิธีเปิด (macOS)
+------------------------------------------------------------
+ง่ายที่สุด: ดับเบิลคลิก BirdNET eBird.app ในโฟลเดอร์ BirdNET-eBird-mac
+   ต้องเก็บแอปไว้ในโฟลเดอร์เดียวกับ python/ และ app/
+
+วิธีสำรอง:
+1. แตกไฟล์ ZIP ทั้งอันก่อน (ดับเบิลคลิกที่ .zip)
+2. เก็บทั้งโฟลเดอร์ BirdNET-eBird ไว้ด้วยกัน อย่าแยกไฟล์
+3. ครั้งแรก: คลิกขวา (หรือ Control-click) ที่ BirdNET-eBird.command
+   แล้วเลือก Open > Open  (จำเป็นครั้งแรกเพราะแอปยังไม่ได้ notarize)
+   ครั้งต่อไปดับเบิลคลิกได้เลย
+   ถ้าขึ้นว่า "damaged / cannot be opened" ให้เปิด Terminal พิมพ์:
+       xattr -dr com.apple.quarantine /path/to/BirdNET-eBird
+ต้องลงอะไรเพิ่มไหม? ไม่ต้อง มี Python และ ffmpeg/ffprobe มาให้ครบในโฟลเดอร์นี้
+   อ่านได้ทั้ง WAV, MP3, FLAC, M4A (ไฟล์จากมือถือ), OGG, AIFF
+
+ใช้งาน:
+1. เปิดแอป แล้วคลิก "Choose file and start" หรือ "Choose folder and start"
+   แอปจะตรวจข้อมูลไฟล์และเริ่มวิเคราะห์เอง ถ้าไม่มีวันที่หรือพิกัดใน metadata
+   จะเปิดหน้าต่างให้กรอกข้อมูลจริงก่อนเริ่ม (วันที่เป็น YYYY-MM-DD)
+   ถ้าทราบเวลาเริ่มบันทึก ให้กรอก HH:MM เพื่อให้เวลาแต่ละคลิปถูกต้อง
+   หากเลือกหลายไฟล์ วันที่/พิกัดที่กรอกจะใช้กับทุกไฟล์ ต้องยืนยันว่าเป็นชุดเดียวกัน
+   ถ้าคนละวันหรือคนละจุด ให้แยกประมวลผล
+2. เมื่อวิเคราะห์เสร็จและมีผลลัพธ์วันเดียว แอปจะเปิดแท็บ "Review clips" ให้
+   หากมีหลายวัน ให้เปิดโฟลเดอร์ผลลัพธ์แล้วเลือก summary.xlsx ของวันที่ต้องการ
+   เลือกคลิป กด ▶ Play ฟังเสียง
+   กด Spectrogram ดูภาพเสียง แล้วแก้ชื่อชนิดนกและให้คะแนน Audio quality 1–5 ด้วยคน
+   กด ✓ Approve → Ready เพื่อคัดลอกเฉพาะคลิปที่ตรวจแล้วไปโฟลเดอร์ Ready/
+   หรือกด Reject / Keep pending; R0 ในคลิปต้นทาง = ยังไม่ตรวจ
+   ค่า AI confidence band เป็นเพียงค่าของโมเดล ไม่ใช่คะแนนคุณภาพเสียง
+3. แท็บ "Advanced settings" ใช้ปรับเกณฑ์และรายละเอียดอื่นเมื่อจำเป็น
+   แท็บ "Merge clips" ใช้รวมคลิปของนกตัวเดียวกันที่ตรวจสอบแล้วเท่านั้น
+   ตัวเลือก Keep continuous ในแท็บขั้นสูงเก็บเสียงตั้งแต่การพบครั้งแรกถึงครั้งสุดท้าย
+   ของแต่ละชนิดไว้ต่อเนื่อง เหมาะเมื่อยืนยันว่าเป็นนกตัวเดียวกัน
+   ช่วงต่อเนื่องขนาดใหญ่มากจะให้เตรียมในโปรแกรมแก้เสียงแทน เพื่อไม่ให้หน่วยความจำเต็ม
+
+ผลลัพธ์เก็บไฟล์ต้นฉบับไว้เหมือนเดิม การรันซ้ำด้วย force redo จะสร้างคลิป
+และสรุปใหม่ พร้อมตั้งสถานะการตรวจกลับเป็น Pending
+เลือกไฟล์เดิมซ้ำโดยไม่ติ๊ก force redo จะเปิดผลเดิมให้ และเก็บผลตรวจที่ทำไว้
+ปิดโปรแกรมระหว่างวิเคราะห์ได้ ไฟล์ที่เสร็จแล้วถูกบันทึกไว้ รันใหม่จะทำต่อจากไฟล์ที่เหลือ
+เวลาใน metadata ที่เป็น UTC (เช่นไฟล์ m4a จากมือถือ) จะแปลงเป็นเวลาตาม time zone
+ที่ตั้งไว้ในเครื่อง Mac (System Settings > General > Date & Time) ตั้งให้ตรงกับจุดที่บันทึก
 
 ------------------------------------------------------------
-วิธีเปิด (สำคัญ — ทำตามให้ครบ)
+How to open (macOS)
 ------------------------------------------------------------
-1. แตกไฟล์ ZIP ทั้งอันก่อน  (คลิกขวาที่ไฟล์ ZIP > Extract All / แตกไฟล์)
-   อย่าเปิด .exe จากข้างในไฟล์ ZIP ตรง ๆ — จะเปิดไม่ได้
-2. อย่าแยกไฟล์ออกจากกัน — เก็บทั้งโฟลเดอร์ BirdNET-eBird ไว้ด้วยกัน
-   (ห้ามลาก BirdNET-eBird.exe ออกไปไว้ที่อื่นเดี่ยว ๆ)
-3. ดับเบิลคลิก  BirdNET-eBird.exe
-4. ครั้งแรก Windows อาจขึ้น "Windows protected your PC"
-   ให้กด  More info  แล้วกด  Run anyway
-   (เป็นเรื่องปกติของโปรแกรมที่ยังไม่ได้เซ็นลายเซ็นดิจิทัล ไฟล์ปลอดภัย)
+Double-click BirdNET eBird.app inside the BirdNET-eBird-mac folder.
+Keep the app in that folder with python/ and app/.
 
-ต้องลงโปรแกรมอะไรเพิ่มไหม ?  ไม่ต้องเลย
-ขอแค่เครื่อง Windows 10 หรือ 11 (64-bit)
+Alternative launcher:
+1. Unzip the whole archive first.
+2. Keep the BirdNET-eBird folder together.
+3. First run: right-click (Control-click) BirdNET-eBird.command > Open > Open
+   (needed once because the app isn't notarized). After that, double-click.
+   If it says "damaged / cannot be opened", open Terminal and run:
+       xattr -dr com.apple.quarantine /path/to/BirdNET-eBird
+Nothing else to install: Python and ffmpeg/ffprobe are included. Supported
+input: WAV, MP3, FLAC, M4A (phone recordings), OGG, AIFF.
 
-------------------------------------------------------------
-ใช้งานคร่าว ๆ
-------------------------------------------------------------
-แท็บ Analyze : เลือกไฟล์เสียงหรือทั้งโฟลเดอร์ > ใส่พิกัด (lat,lon เช่น
-   13.8119502,100.553166 หรือวางลิงก์ Google Maps ก็ได้) > กด Analyze
-   ผลลัพธ์ออกเป็นคลิปแยกตามชนิดนก + ไฟล์ summary.xlsx
-   ชื่อไฟล์ลงท้าย R0 = ยังไม่ตรวจ ให้ฟัง/ดู spectrogram แล้วแก้เป็น R1-R5 เอง
+On the Start tab, click "Choose file and start" or "Choose folder and start". The app checks metadata and
+starts automatically. If the recording date or coordinates are missing, it asks
+for the real values in one dialog before analysis. Enter the date as YYYY-MM-DD
+and the start time (HH:MM) when known. File timestamps may not be the actual
+recording start. The program stops before loading BirdNET if required details
+are missing.
+For a folder with multiple files, a manually entered Date applies to every
+file. Confirm they share that date, or process the dates separately. In CLI
+mode, add --same-date-for-all after checking the files.
 
-แท็บ Merge (same individual) : รวมหลายคลิป "ของนกตัวเดียวกัน" เป็นไฟล์เดียว
-   (คั่นความเงียบ 1 วินาทีตามคู่มือ eBird)  *รวมเฉพาะนกตัวเดียวกันเท่านั้น*
-
-พิมพ์ไทยแล้ว Ctrl+V วางไม่ได้ ?  คลิกขวาในช่อง > Paste ได้เลย
-
-------------------------------------------------------------
-ช่วยกันอัปข้อมูลขึ้น eBird
-------------------------------------------------------------
-อย่าปล่อยให้เสียงนกที่อัดไว้นอนอยู่ในฮาร์ดดิสก์
-พอ review + ให้ rating แล้ว อัปขึ้น eBird / Macaulay Library :
- - เพิ่มคลังข้อมูล citizen science ระดับโลก ที่นักวิจัย/นักอนุรักษ์เอาไปใช้
-   ติดตามการกระจาย ฤดูกาล และการเปลี่ยนแปลงประชากรนก
- - ช่วย train Merlin Bird ID ให้แม่นขึ้น โดยเฉพาะภูมิภาคที่ข้อมูลยังน้อย
-   อย่างเอเชียตะวันออกเฉียงใต้
-เสียงที่คุณอัดมีค่า — ตัด เช็ค แล้วส่งขึ้นไป
+Review each result in the Review clips tab: listen, inspect the spectrogram, correct
+the species, and assign a human audio-quality rating. Only approved clips are
+copied to Ready/. BirdNET confidence is not an audio-quality rating.
+Selecting an already-processed file again (without force redo) opens the
+existing results and keeps your reviews. Closing the app during analysis is
+safe: finished files are saved and the next run continues with the rest.
+UTC timestamps in metadata (e.g. phone m4a files) are converted to the Mac's
+time zone (System Settings > General > Date & Time); set it to where you recorded.
+Very long continuous spans may need a dedicated audio editor to avoid running
+out of memory.
 
 ------------------------------------------------------------
-ขอบคุณ
+Included components
 ------------------------------------------------------------
-เครื่องมือนี้เกิดขึ้นได้จากความรู้ คำแนะนำ และประสบการณ์ภาคสนามของ
- - Biopikat  (ผู้พัฒนา / เพจ Biopikat)
+ - Python 3.12 (python-build-standalone) with Tcl/Tk 9
+ - BirdNET via birdnetlib, running on LiteRT (ai-edge-litert) instead of
+   TensorFlow; the model is CC BY-NC-SA 4.0 (non-commercial use)
+ - ffmpeg/ffprobe for audio formats and metadata. They are included in a built
+   bundle; tools/build_ffmpeg.sh can build portable copies on macOS.
+
+------------------------------------------------------------
+Please upload to eBird / Macaulay Library
+------------------------------------------------------------
+It powers global citizen science and helps train Merlin Bird ID to be
+more accurate, especially for under-sampled regions like Southeast Asia.
+
+------------------------------------------------------------
+Thanks / ขอบคุณ
+------------------------------------------------------------
+ - Biopikat (developer / page: Biopikat)
  - Tripitcha Wanwimolruk
  - Wichyanan Limparungpatthanakij
  - Utain Pummarin
  - Chutinton Viriyapanon
- - ทีม eBird reviewer ประเทศไทย
- - Cornell Lab of Ornithology  (BirdNET, Merlin Bird ID, eBird / Macaulay Library)
- - Anthropic  (Claude — ผู้ช่วยพัฒนาและเขียนโค้ดเครื่องมือนี้)
-ขอบคุณที่แบ่งปันข้อมูล และเวลาให้กับงานนี้
-
-============================================================
-  ENGLISH
-============================================================
-How to open:
-1. Extract the whole ZIP first (right-click > Extract All). Do NOT run
-   the .exe from inside the ZIP preview.
-2. Keep the whole BirdNET-eBird folder together; don't move the .exe out.
-3. Double-click BirdNET-eBird.exe
-4. If Windows SmartScreen shows "Windows protected your PC", click
-   More info > Run anyway (normal for unsigned apps; the file is safe).
-Needs nothing installed — just 64-bit Windows 10/11.
-
-Analyze tab: pick a file/folder, enter coords (lat,lon or a Google Maps
-link), click Analyze. Output = clips per species + summary.xlsx. "R0" =
-unreviewed; listen/check, then rename to R1-R5.
-Merge tab: join clips of the SAME individual bird into one file.
-
-Please upload your recordings to eBird / Macaulay Library — it powers
-citizen science and helps train Merlin Bird ID to be more accurate.
-
-Thanks to: Biopikat, Tripitcha Wanwimolruk, Wichyanan Limparungpatthanakij,
-Utain Pummarin, Chutinton Viriyapanon, the eBird reviewers of Thailand, the
-Cornell Lab of Ornithology, and Anthropic (Claude).
+ - The eBird reviewers of Thailand
+ - Cornell Lab of Ornithology (BirdNET, Merlin Bird ID, eBird / Macaulay Library)
+ - Anthropic (Claude — helped develop and write this tool)

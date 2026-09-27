@@ -1,0 +1,25 @@
+#!/bin/zsh
+# Finder launches this file from BirdNET eBird.app. Keep the app inside its bundle folder.
+set -u
+
+bundle_dir="$(cd "$(dirname "$0")/../../.." && pwd -P)"
+python_bin="$bundle_dir/python/bin/python3.12"
+[[ -x "$python_bin" ]] || python_bin="$bundle_dir/python/bin/python3"
+app_script="$bundle_dir/app/birdnet_app.py"
+if [[ ! -x "$python_bin" || ! -f "$app_script" ]]; then
+    /usr/bin/osascript -e 'display alert "BirdNET eBird" message "The program folder is missing. Keep BirdNET eBird.app inside the BirdNET-eBird-mac folder." as critical' >/dev/null 2>&1
+    exit 1
+fi
+
+log_dir="$HOME/Library/Logs"
+mkdir -p "$log_dir"
+export PATH="$bundle_dir:$bundle_dir/python/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+export PYTHONIOENCODING="utf-8"
+export PYTHONUNBUFFERED=1
+cd "$bundle_dir" || exit 1
+"$python_bin" "$app_script" >>"$log_dir/BirdNET-eBird.log" 2>&1
+result=$?
+if [[ $result -ne 0 ]]; then
+    /usr/bin/osascript -e 'display alert "BirdNET eBird could not start" message "See Library/Logs/BirdNET-eBird.log for details." as critical' >/dev/null 2>&1
+fi
+exit $result

@@ -2,11 +2,11 @@
 # build-macos.sh — build a portable macOS bundle (runs on Macs without Python)
 # ---------------------------------------------------------------------------
 # MUST be run ON a Mac (it downloads a macOS Python + installs macOS wheels).
-# Mirrors build-exe.ps1 for Windows, but macOS uses full TensorFlow instead of
-# ai-edge-litert (which has no macOS wheel — birdnetlib falls back to TF).
+# Mirrors build-exe.ps1 for Windows. The working Apple Silicon package uses
+# ai-edge-litert through the tflite_runtime shim in app/.
 #
 # Run:    bash build-macos.sh
-# Output: dist/BirdNET-eBird-mac/  -> a double-clickable "BirdNET-eBird.command"
+# Output: dist/BirdNET-eBird-mac/ with a Finder app and a .command fallback
 #         Share it as a .zip (see the end of this script).
 #
 # Needs on the BUILD Mac: curl, tar, and ffmpeg+ffprobe on PATH (brew install ffmpeg).
@@ -38,19 +38,21 @@ tar -xzf "$tmp/py.tar.gz" -C "$tmp"          # -> $tmp/python/
 mv "$tmp/python" "$bundle/python"
 vpy="$bundle/python/bin/python3"
 
-# --- install deps (full TensorFlow via requirements-macos.txt) ---
-echo "installing deps into the bundle python ... (first run is slow, TF is large)"
+# --- install dependencies via requirements-macos.txt ---
+echo "installing deps into the bundle python ..."
 "$vpy" -m pip install --upgrade pip
 "$vpy" -m pip install -r "$here/requirements-macos.txt"
 
-# --- app code + shim ---
-mkdir -p "$bundle/app/tflite_runtime"
-cp "$here/birdnet_app.py" "$here/field_audio_to_ebird.py" "$here/birdnet_gui.py" "$bundle/app/"
-cp "$here"/tflite_runtime/*.py "$bundle/app/tflite_runtime/"
+# --- app code, review workflow, icon, and LiteRT shim ---
+mkdir -p "$bundle/app/tflite_runtime" "$bundle/app/assets"
+cp "$here"/app/*.py "$bundle/app/"
+cp "$here"/app/tflite_runtime/*.py "$bundle/app/tflite_runtime/"
+cp "$here"/app/assets/app_icon.png "$bundle/app/assets/"
 
-# --- ffmpeg + ffprobe (from PATH; brew install ffmpeg) ---
+# --- ffmpeg + ffprobe (set FFMPEG_DIR to self-contained builds when distributing) ---
 for b in ffmpeg ffprobe; do
-  p="$(command -v $b || true)"
+  p="${FFMPEG_DIR:-}/$b"
+  [ -x "$p" ] || p="$(command -v "$b" || true)"
   if [ -z "$p" ]; then
     echo "WARNING: $b not found on PATH — install with: brew install ffmpeg"
   else
@@ -58,57 +60,8 @@ for b in ffmpeg ffprobe; do
   fi
 done
 
-# --- macOS README (Thai/English) with Gatekeeper steps ---
-cat > "$bundle/อ่านก่อนใช้.txt" <<'READMEEOF'
-============================================================
-  BirdNET -> eBird clipper (macOS)     อ่านก่อนใช้ / READ ME FIRST
-============================================================
-
-วิธีเปิด (macOS)
-------------------------------------------------------------
-1. แตกไฟล์ ZIP ทั้งอันก่อน (ดับเบิลคลิกที่ .zip)
-2. เก็บทั้งโฟลเดอร์ BirdNET-eBird ไว้ด้วยกัน อย่าแยกไฟล์
-3. ครั้งแรก: คลิกขวา (หรือ Control-click) ที่ BirdNET-eBird.command
-   แล้วเลือก Open > Open  (จำเป็นครั้งแรกเพราะแอปยังไม่ได้ notarize)
-   ครั้งต่อไปดับเบิลคลิกได้เลย
-   ถ้าขึ้นว่า "damaged / cannot be opened" ให้เปิด Terminal พิมพ์:
-       xattr -dr com.apple.quarantine /path/to/BirdNET-eBird
-ต้องลงอะไรเพิ่มไหม? ไม่ต้อง (ยกเว้นถ้า ffmpeg ไม่ได้ถูก bundle มา ให้
-   ลง: brew install ffmpeg)
-
-ใช้งาน: เหมือนเวอร์ชัน Windows — แท็บ Analyze เลือกไฟล์/โฟลเดอร์ + พิกัด
-   (เช่น 13.8119502,100.553166) แล้วกด Analyze; แท็บ Merge รวมนกตัวเดียวกัน
-   ผลลัพธ์ = คลิปแยกชนิด + summary.xlsx; R0 = ยังไม่ตรวจ แก้เป็น R1-R5 เอง
-
-------------------------------------------------------------
-How to open (macOS)
-------------------------------------------------------------
-1. Unzip the whole archive first.
-2. Keep the BirdNET-eBird folder together.
-3. First run: right-click (Control-click) BirdNET-eBird.command > Open > Open
-   (needed once because the app isn't notarized). After that, double-click.
-   If it says "damaged / cannot be opened", open Terminal and run:
-       xattr -dr com.apple.quarantine /path/to/BirdNET-eBird
-Nothing to install (unless ffmpeg wasn't bundled: brew install ffmpeg).
-
-------------------------------------------------------------
-Please upload to eBird / Macaulay Library
-------------------------------------------------------------
-It powers global citizen science and helps train Merlin Bird ID to be
-more accurate, especially for under-sampled regions like Southeast Asia.
-
-------------------------------------------------------------
-Thanks / ขอบคุณ
-------------------------------------------------------------
- - Biopikat (developer / page: Biopikat)
- - Tripitcha Wanwimolruk
- - Wichyanan Limparungpatthanakij
- - Utain Pummarin
- - Chutinton Viriyapanon
- - The eBird reviewers of Thailand
- - Cornell Lab of Ornithology (BirdNET, Merlin Bird ID, eBird / Macaulay Library)
- - Anthropic (Claude — helped develop and write this tool)
-READMEEOF
+# --- packaged guide (same text maintained in the repository) ---
+cp "$here/อ่านก่อนใช้.txt" "$bundle/อ่านก่อนใช้.txt"
 
 # --- double-click launcher: BirdNET-eBird.command ---
 cat > "$bundle/BirdNET-eBird.command" <<'LAUNCH'
@@ -126,9 +79,17 @@ exec "$py" "$dir/app/birdnet_app.py" "$@"
 LAUNCH
 chmod +x "$bundle/BirdNET-eBird.command"
 
+# Finder app: shares the bundle's Python and source, and opens without Terminal.
+desktop_app="$bundle/BirdNET eBird.app"
+mkdir -p "$desktop_app/Contents/MacOS" "$desktop_app/Contents/Resources"
+cp "$here/macos/Info.plist" "$desktop_app/Contents/Info.plist"
+cp "$here/macos/BirdNET-eBird" "$desktop_app/Contents/MacOS/BirdNET-eBird"
+cp "$here/app/assets/AppIcon.icns" "$desktop_app/Contents/Resources/AppIcon.icns"
+chmod +x "$desktop_app/Contents/MacOS/BirdNET-eBird"
+
 echo ""
 echo "=== Done ==="
 echo "Bundle: $bundle"
-echo "Test it:  open \"$bundle/BirdNET-eBird.command\""
+echo "Test it:  open \"$desktop_app\""
 echo "Zip to share (preserves the +x bit):"
 echo "  ditto -c -k --sequesterRsrc --keepParent \"$bundle\" \"$here/BirdNET-eBird-mac.zip\""

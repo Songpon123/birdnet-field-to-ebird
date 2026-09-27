@@ -1,224 +1,81 @@
 # BirdNET field-to-eBird
 
-Cut bird clips from long field recordings with **BirdNET**, ready to upload to
-**eBird / Macaulay Library**, following the Cornell Lab
-*Audio Editing in Audacity for eBird* guide.
+Turn field recordings into reviewable bird clips for eBird / Macaulay Library. BirdNET suggests species; a person must listen, confirm the identification, and rate audio quality before uploading.
 
-- Automatic species ID (filtered by location + date)
-- Splits clips **per occurrence** — one continuous cut with lead/tail padding,
-  no silence joins, no concatenation
-- Standard ML filenames: `YYYY.MM.DD_HHMM_Genus.species_R0.wav`, foldered by day / species
-- **Preserves quality** (sample rate + bit depth: 24-bit stays 24-bit), downmix to mono, normalize −3 dB
-- `summary.xlsx`, one row per clip (confidence, alternate species, peak dBFS, clipping flag, rough SNR,
-  **call frequency in Hz** — peak / low / high — plus a **Xeno-Canto link** to that species'
-  reference recordings so you can recheck the ID by ear, …)
-- Optional mel-spectrograms for visual review
+## What the current app does
 
-Three ways to run: **Tkinter GUI** (desktop window), **Streamlit** (browser), **CLI**.
+- **Start tab:** choose an audio file or folder and analysis starts. If the recording date or location is missing from metadata, the app asks for the real values first. It never substitutes a file's modification date for a missing recording date.
+- **Analysis:** BirdNET detects calls and exports a WAV per occurrence, preserving the source sample rate and bit depth where possible. Optional spectrograms and alternate candidate species help with review.
+- **Review clips tab:** listen, inspect spectrograms, correct names, and assign a human quality rating. Only approved clips are copied to `Ready/`. Reviews are kept when an unchanged source is selected again.
+- **Advanced settings:** adjust confidence, padding, normalization, unknown detections, and continuous spans.
+- **Merge clips:** combine clips only after confirming they are from the same individual bird.
 
----
+Outputs go to `~/BirdNET_eBird` by default, grouped by recording date and start time. Each session has `summary.xlsx`. The original recordings are left untouched. If a run is interrupted, completed files remain available and a later run can continue.
 
-## Requirements
+## macOS: build a desktop bundle
 
-1. **Python 3.12** (important — TensorFlow does not support 3.13+)
-   ```powershell
-   winget install Python.Python.3.12
-   ```
-2. **ffmpeg**
-   ```powershell
-   winget install Gyan.FFmpeg
-   ```
-3. **git** (to clone)
-
-> Recommended: RAM ≥ 8 GB, free disk ~3 GB (TensorFlow + model).
-
-## Install
-
-```powershell
-git clone <repo-url> birdnet-field-to-ebird
-cd birdnet-field-to-ebird
-powershell -ExecutionPolicy Bypass -File setup.ps1
-```
-
-`setup.ps1` creates a virtual env (`.venv`) and installs dependencies
-(first run is slow — TensorFlow is large).
-
-## Usage
-
-```powershell
-.\run-gui.ps1     # Tkinter — pick a file via dialog (recommended: reads date/time from the file)
-.\run-web.ps1     # Streamlit — open http://localhost:8501 in a browser
-```
-
-The GUI has two tabs: **Analyze** (detect + cut clips) and **Merge (same individual)**
-— pick several clips of the *same individual bird*, set an output file, and it joins
-them with 1 s of silence between (per the eBird guideline), trimming and re-normalizing.
-Coordinates accept `lat,lon` (e.g. `13.8119502,100.553166`) or a pasted Google Maps link.
-
-Or the CLI directly:
-
-```powershell
-.\.venv\Scripts\python.exe field_audio_to_ebird.py "recording.wav" -o "output_dir" `
-    --coords 13.8119502,100.553166 --place "Site name" --spectrogram
-# Whole folder (batch):
-.\.venv\Scripts\python.exe field_audio_to_ebird.py "audio_folder" -o "output_dir"
-# Merge clips of the same individual into one file:
-.\.venv\Scripts\python.exe field_audio_to_ebird.py --group clip1.wav clip2.wav -o merged.wav
-```
-
-### Key options (CLI; also in both GUIs)
-| Option | Default | Meaning |
-|---|---|---|
-| `--lat` `--lon` | (empty = read metadata / config default) | survey coordinates |
-| `--date` | (empty = guess from filename / metadata / file time) | override date YYYY-MM-DD |
-| `--min-conf` | 0.5 | minimum confidence 0–1 |
-| `--occurrence-gap` | 5 | gap larger than this (s) = separate occurrence = separate file |
-| `--lead` `--tail` | 3 / 3 | padding before / after (s) |
-| `--spectrogram` | off | generate mel-spectrograms |
-| `--unknown` | off | also cut sounds BirdNET can't confidently ID into an `_Unknown/` folder (for manual / expert review) |
-| `--unknown-min-conf` | 0.25 | confidence floor for `_Unknown` (below this = ignored as noise) |
-| `--highpass` | 0 (off) | high-pass filter cutoff Hz — cut low rumble/wind/hum; use sparingly (eBird suggests ≤250) |
-| `--xc-key` | (env `XC_API_KEY`) | Xeno-Canto v3 API key — enables downloading reference audio per species |
-| `--xc-country` | (worldwide) | filter XC reference audio by country, e.g. `thailand` |
-| `--xc-count` | 2 | XC reference recordings to fetch per species |
-| `--force` | off | re-process even if the file was already cut (normally skipped) |
-
-> **Xeno-Canto recheck.** The summary always has a **Xeno-Canto link** column (no key needed —
-> click to listen on the web). If you also give an **API key** (free, from
-> [xeno-canto.org/account](https://xeno-canto.org/account); GUI: *Xeno-Canto key* field), it
-> downloads the top quality-A recordings per species into `<output>/_reference/<species>/` so you
-> can A/B them against your clips. The key is read from the flag/env only — never stored in the repo.
-
-> **`_Unknown/` folder:** with `--unknown` (GUI: **cut unknown** checkbox), any sound BirdNET
-> detects at `[0.25, min-conf)` confidence — and that doesn't overlap a confident detection —
-> is cut into `<date>/_Unknown/`. Filenames are `<date>_<time>_UNKNOWN_R0.wav`. To help you narrow
-> it down, the summary lists BirdNET's **top-3 candidate species** with confidences in the
-> *Alt species 1/2/3* columns (hints, not IDs), plus a Xeno-Canto link — and, with an API key,
-> downloads that species' reference audio. Listen and compare, or send them to an expert.
-
-## Standalone .exe (run on machines without Python)
-
-Build a self-contained folder that runs on any 64-bit Windows PC — **no Python,
-no pip, no ffmpeg install** needed on the target machine. It bundles a real
-Python 3.12, all dependencies, the BirdNET model, and ffmpeg next to a small
-`BirdNET-eBird.exe` launcher.
-
-On your build machine you need Python 3.12 (`winget install Python.Python.3.12`)
-and ffmpeg (`winget install Gyan.FFmpeg`) on PATH, then:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File build-exe.ps1
-```
-
-Output: `dist\BirdNET-eBird\` — **zip this whole folder** and copy it to the other PC.
-There, unzip and run `BirdNET-eBird.exe` (double-click = GUI window).
-
-```
-BirdNET-eBird\
-  BirdNET-eBird.exe   ← run this (no args = GUI, args = CLI)
-  python\             ← bundled Python 3.12 + all deps (don't remove)
-  app\                ← program code
-  ffmpeg.exe  ffprobe.exe
-```
-
-### For the people you share it with (no install needed)
-
-**Nothing to install.** Python, ffmpeg, the BirdNET model, and the Microsoft VC++
-runtime (`msvcp140.dll`, `vcomp140.dll`, …) are all bundled. Just:
-
-1. **Extract the whole ZIP first** (right-click → Extract All). Don't run the `.exe`
-   from inside the ZIP preview — it won't find `python\` / `app\`.
-2. **Keep the whole folder together.** Don't move `BirdNET-eBird.exe` out on its own.
-3. Double-click `BirdNET-eBird.exe`.
-4. First time, Windows SmartScreen may say *"Windows protected your PC"* (because the
-   `.exe` isn't code-signed). Click **More info → Run anyway**. This is normal for
-   unsigned apps; the file is safe.
-
-Requirements on their PC: **64-bit Windows 10 or 11**. That's it.
-
-- Large (~1.1 GB). First launch is slow (loads the model).
-- Also works as a CLI: `BirdNET-eBird.exe "recording.wav" -o out --lat 13.75 --lon 100.5`
-- Uses **ai-edge-litert (LiteRT)** instead of full TensorFlow, so it's much smaller
-  and needs no GPU/CUDA. Detection results are identical.
-
-> Why a bundled Python instead of a single frozen `.exe`? PyInstaller crashes while
-> analyzing this project's native libraries (TensorFlow / scipy / numba) on Windows.
-> Bundling a real Python sidesteps that and is rock-solid.
->
-> The Streamlit browser UI is **not** in the `.exe` (it ships the Tkinter GUI + CLI).
-> For the browser UI, use the clone + `setup.ps1` route above.
-
-### macOS bundle
-
-Same idea for macOS, built with `build-macos.sh` — **must be run on a Mac** (it
-downloads a macOS Python and macOS wheels; it can't be cross-built from Windows).
+This GitHub repository contains **source code**, not the large Python runtime, model, or ffmpeg binaries. Build a portable bundle on an Apple Silicon Mac with Python 3.12 dependencies and ffmpeg/ffprobe:
 
 ```bash
-brew install ffmpeg           # provides ffmpeg + ffprobe
-bash build-macos.sh           # -> dist/BirdNET-eBird-mac/BirdNET-eBird.command
-# zip to share (keeps the +x bit):
+brew install ffmpeg
+bash build-macos.sh
+open "dist/BirdNET-eBird-mac/BirdNET eBird.app"
+```
+
+The build produces `dist/BirdNET-eBird-mac/` with `BirdNET eBird.app`, a `.command` fallback, Python, and the application code. Keep the `.app` **inside that folder**; it uses the sibling `python/` and `app/` directories. To share it, zip the entire folder:
+
+```bash
 ditto -c -k --sequesterRsrc --keepParent dist/BirdNET-eBird-mac BirdNET-eBird-mac.zip
 ```
 
-- macOS uses **full TensorFlow** (Apple-Silicon `tensorflow` 2.21 / Intel 2.16) because
-  `ai-edge-litert` has no macOS wheel; birdnetlib falls back to `tensorflow.lite`
-  automatically. Detection results are the same.
-- The launcher is a double-clickable `BirdNET-eBird.command` (opens a Terminal window +
-  the GUI). No args = GUI, args = CLI.
-- **Gatekeeper (first run):** the app isn't notarized, so right-click (Control-click)
-  `BirdNET-eBird.command` → **Open → Open** the first time. If macOS says it's "damaged",
-  run `xattr -dr com.apple.quarantine /path/to/BirdNET-eBird`.
-- Works on Apple Silicon (arm64) and Intel (x86_64); build on the same kind of Mac you
-  want to run it on (or on Apple Silicon, build both via Rosetta for the Intel one).
-- **ffmpeg on macOS:** Homebrew's `ffmpeg` links external dylibs, so the copied binary
-  may not run on a *clean* Mac without ffmpeg. That's usually fine — WAV/FLAC/MP3 are read
-  directly via `soundfile` and don't need ffmpeg; ffmpeg is only used for `.m4a`/`.aac`
-  and metadata probing. If a target Mac needs it, `brew install ffmpeg` there, or swap in
-  a static ffmpeg build before zipping.
+For a bundle that runs without Homebrew ffmpeg on another Mac, build self-contained audio binaries using `tools/build_ffmpeg.sh` and set `FFMPEG_DIR` to its `prefix/bin` when running `build-macos.sh`. The checked-in Mac dependency versions match the working Apple Silicon package; an Intel build has not been verified.
 
-## Notes / tips
+Because the app is not notarized, macOS may require opening it with **Control-click → Open** on first launch. See [อ่านก่อนใช้.txt](%E0%B8%AD%E0%B9%88%E0%B8%B2%E0%B8%99%E0%B8%81%E0%B9%88%E0%B8%AD%E0%B8%99%E0%B9%83%E0%B8%8A%E0%B9%89.txt) for the Thai and English packaged guide.
 
-- **Clip date/time** comes from: filename (`20260613 0830`, `2026-06-13 08_30`) → file metadata → file mtime.
-  Files without a date in the name are most reliable if you name them with the date/time.
-- **Don't use "Upload" in Streamlit for files that have no date in the name** — the browser drops the
-  file timestamp, so you get the upload date instead of the recording date. Use the "pick local file"
-  button or the Tkinter GUI instead.
-- 24-bit beats 16-bit for field audio (wider dynamic range); the tool keeps 24-bit.
-- `R0` in the filename = unreviewed (auto). Listen / check the spectrogram, then edit it to R1–R5 before uploading.
+## Run from source
 
-## Why upload to eBird / Macaulay Library
+The source layout has one application copy in `app/`. On macOS, use Python 3.12, install `requirements-macos.txt`, and run:
 
-Please don't let your recordings sit on a hard drive. When you review, rate, and upload
-your clips to **eBird / Macaulay Library**:
+```bash
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r requirements-macos.txt
+.venv/bin/python app/birdnet_app.py
+```
 
-- You add to a **global citizen-science** archive that researchers and conservationists
-  rely on — every record helps track distributions, seasonality, and population change.
-- You help **train Merlin Bird ID** to recognize species more accurately, especially for
-  under-sampled regions like Southeast Asia. More high-quality, well-labeled recordings =
-  a smarter Merlin for everyone.
+Install ffmpeg/ffprobe separately if working with M4A/MP3 and for complete metadata probing. The GUI uses the local machine only; it does not upload your audio to eBird.
 
-Your recordings matter. Cut them, check them, and send them in. 🐦
+On Windows, `setup.ps1` and `run-gui.ps1` remain available. `build-exe.ps1` assembles a portable Windows folder with the current `app/` code. Windows packaging has not been retested with this update.
 
-## Acknowledgements
+The optional Streamlit interface remains in `birdnet_ui.py`; run it with `run-web.ps1` after Windows setup, or `streamlit run birdnet_ui.py` in a configured source environment. Its review view is separate from the desktop app's approval workflow.
 
-This tool exists thanks to the knowledge, feedback, and field expertise of:
+## Command line
 
-- **Biopikat** — creator of this tool (Facebook page: *Biopikat*)
-- **Tripitcha Wanwimolruk**
-- **Wichyanan Limparungpatthanakij**
-- **Utain Pummarin**
-- **Chutinton Viriyapanon**
-- **The eBird reviewers of Thailand** — for their volunteer work reviewing records and
-  safeguarding data quality
-- **The Cornell Lab of Ornithology** — for BirdNET, Merlin Bird ID, and the
-  eBird / Macaulay Library that make all of this possible
-- **Anthropic** — Claude helped develop and write the code for this tool
+```bash
+# A recording whose metadata contains date and coordinates
+.venv/bin/python app/field_audio_to_ebird.py recording.wav -o output
 
-Thank you for sharing your ears, your data, and your time.
+# A recording without those metadata fields: provide the real values
+.venv/bin/python app/field_audio_to_ebird.py recording.wav -o output \
+  --date 2026-09-27 --coords 13.81195,100.55317 --start-time 06:30
 
-## License / credits
+# Several files recorded on the same date; confirm the shared manual date
+.venv/bin/python app/field_audio_to_ebird.py audio_folder -o output \
+  --date 2026-09-27 --same-date-for-all --coords 13.81195,100.55317
 
-- This code: use and modify freely.
-- **BirdNET** model: CC BY-NC-SA 4.0 (Cornell Lab / Stefan Kahl et al.) — for education/research
-  (non-commercial); give credit and share-alike.
-- Follow eBird / Macaulay Library upload guidelines.
+# Merge clips only after confirming they are the same individual
+.venv/bin/python app/field_audio_to_ebird.py --group clip1.wav clip2.wav -o merged.wav
+```
+
+For files without a date in metadata, `--date` is required even if the filename or file modification time looks like a date. A location is also required if absent from metadata. `--coords` accepts latitude/longitude or a Google Maps link. For a folder with a manual date, `--same-date-for-all` confirms that it applies to every file.
+
+## Checks
+
+The repository includes workflow tests for required metadata, review approvals, safe reruns, interruption, and continuous spans:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+## Credits and use
+
+This project builds on BirdNET and the Cornell Lab's eBird / Macaulay Library guidance. Thanks to Biopikat, Tripitcha Wanwimolruk, Wichyanan Limparungpatthanakij, Utain Pummarin, Chutinton Viriyapanon, and the eBird reviewers of Thailand for field expertise and feedback. BirdNET model licensing and eBird upload guidelines still apply; see the model's CC BY-NC-SA 4.0 terms for non-commercial use.

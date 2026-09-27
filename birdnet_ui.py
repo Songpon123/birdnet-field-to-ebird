@@ -3,7 +3,7 @@
 birdnet_ui.py — Streamlit UI สำหรับ field_audio_to_ebird.py (เวอร์ชันตามสเปก ML/eBird)
 -----------------------------------------------------------------------------------
 รัน:
-    C:\\Users\\songp\\birdnet-env\\Scripts\\streamlit.exe run C:\\Users\\songp\\Downloads\\birdnet_ui.py
+    streamlit run birdnet_ui.py
 
 2 แท็บ:
   ▶️ Run     — เลือก/อัปโหลดไฟล์ + กรอกพิกัด/วัน(ออปชัน)/สถานที่ + พารามิเตอร์
@@ -22,15 +22,14 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-SCRIPT = Path(__file__).resolve().parent / "field_audio_to_ebird.py"
+SCRIPT = Path(__file__).resolve().parent / "app" / "field_audio_to_ebird.py"
 PYTHON = sys.executable
 DEF_AUDIO = ""
 DEF_OUT = str(Path.home() / "BirdNET_eBird")
-DEF_LAT, DEF_LON = 12.80, 99.62
 
 def native_pick(folder: bool) -> str:
     """เปิด native file/folder dialog บนเครื่อง (Streamlit server = เครื่อง local) คืน path
-    ใช้แทนการอัปโหลด เพื่อให้ได้ path จริง -> อ่านวันเวลา (mtime) ของไฟล์ได้"""
+    ใช้แทนการอัปโหลด เพื่อให้ได้ path จริง (mtime ใช้ช่วยเรื่องเวลา ไม่ใช้แทนวันที่บันทึก)"""
     fn = "askdirectory" if folder else "askopenfilename"
     code = (
         "import tkinter as tk\n"
@@ -79,9 +78,8 @@ with tab_run:
         is_dir = bool(audio_arg) and Path(audio_arg).is_dir()
     else:
         up = st.file_uploader("อัปโหลดไฟล์เสียง", type=["wav", "mp3", "flac", "m4a", "ogg", "aif", "aiff"])
-        st.warning("⚠️ การอัปโหลดทำให้ **เวลาไฟล์ (วันอัด) หาย** — เบราว์เซอร์ไม่ส่ง timestamp มา "
-                   "ถ้าไฟล์ไม่มีวันในชื่อ/ใน metadata ระบบจะใช้ 'วันที่อัปโหลด' แทน "
-                   "→ สำหรับไฟล์ในเครื่องแนะนำใช้ 'path ในเครื่อง' หรือกรอก 'วันที่ override'")
+        st.warning("การอัปโหลดอาจทำให้เวลาไฟล์หาย ถ้า metadata ไม่มีวันบันทึก "
+                   "ต้องกรอกวันที่จริงเองก่อนวิเคราะห์")
         if up is not None:
             tmpdir = Path(tempfile.gettempdir()) / "birdnet_uploads"
             tmpdir.mkdir(parents=True, exist_ok=True)
@@ -92,11 +90,15 @@ with tab_run:
             st.caption(f"บันทึกชั่วคราว: {dest}")
 
     st.subheader("2) จุดสำรวจ")
-    st.caption("เว้นว่าง = ดึงจาก metadata / ชื่อไฟล์ อัตโนมัติ · พิกัดวาง 'lat,lon' หรือลิงก์ Google Maps ทั้งอันได้")
+    st.caption("พิกัดต้องเป็นจุดบันทึกจริง หากไฟล์ไม่มีพิกัดใน metadata · วาง 'lat,lon' หรือลิงก์ Google Maps ได้")
     g = st.columns([2, 1, 1])
-    coords = g[0].text_input("พิกัด — lat,lon หรือลิงก์ Google Maps (ว่าง=auto)", f"{DEF_LAT},{DEF_LON}")
-    date = g[1].text_input("วันที่ override (ว่าง=auto)", "")
+    coords = g[0].text_input("พิกัด — lat,lon หรือลิงก์ Google Maps (ว่าง=metadata)", "")
+    date = g[1].text_input("วันที่บันทึก YYYY-MM-DD (ถ้าไม่มีใน metadata)", "")
     place = g[2].text_input("สถานที่ (ว่าง=metadata)", "")
+    if is_dir and date.strip():
+        same_date_for_all = st.checkbox("ยืนยันว่าทุกไฟล์ในโฟลเดอร์บันทึกวันเดียวกัน", False)
+    else:
+        same_date_for_all = False
 
     st.subheader("3) พารามิเตอร์การตัด (ตามคู่มือ ML)")
     min_conf = st.slider("min_conf", 0.0, 1.0, 0.5, 0.05)
@@ -114,9 +116,9 @@ with tab_run:
                               help="บังคับใช้เวลาไฟล์ (เริ่มบันทึก) ข้ามชื่อ/metadata — เหมาะ recorder ที่ชื่อ/folder ไม่ใช่วันจริง")
     out = st.text_input("โฟลเดอร์ผลลัพธ์", DEF_OUT)
 
-    ready = bool(audio_arg)
+    ready = bool(audio_arg) and (not (is_dir and date.strip()) or same_date_for_all)
     if not ready:
-        st.warning("เลือกหรืออัปโหลดไฟล์ก่อน")
+        st.warning("เลือกไฟล์ก่อน และหากกรอกวันที่ให้หลายไฟล์ ต้องยืนยันว่าเป็นวันเดียวกัน")
 
     if st.button("▶️ เริ่มวิเคราะห์", type="primary", disabled=not ready):
         cmd = [
@@ -135,6 +137,8 @@ with tab_run:
             cmd += ["--coords", coords.strip()]
         if date.strip():
             cmd += ["--date", date.strip()]
+        if same_date_for_all:
+            cmd += ["--same-date-for-all"]
         if place.strip():
             cmd += ["--place", place.strip()]
 

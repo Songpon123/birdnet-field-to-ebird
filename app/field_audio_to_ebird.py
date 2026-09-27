@@ -14,14 +14,13 @@ field_audio_to_ebird.py
      *ไม่* คั่นความเงียบ, *ไม่* concat หลาย detection, *ไม่* เฉือนช่วงกลาง (ระยะห่าง = ข้อมูลวิจัย)
   3) ตัดจากไฟล์ต้นฉบับเต็มคุณภาพ (คง sample rate + bit depth), แปลง mono ถ้าตั้ง MAKE_MONO,
      normalize peak ไปที่ TARGET_DBFS (-3 dB) ต่อไฟล์
-  4) ตั้งชื่อตามมาตรฐาน ML: YYYY.MM.DD_HHMM_Genus.species_R0.wav
-     โฟลเดอร์: OUTPUT\\<YYYY.MM.DD>\\<ชื่อสามัญ>\\<ไฟล์>
-  5) summary.xlsx (1 แถว/คลิป) ไว้ให้คนตรวจก่อนสรุป ID
+  4) ตั้งชื่อคลิปที่ยังไม่ตรวจด้วย R0 และเก็บแยกตามวัน/เวลาและชนิด
+  5) summary.xlsx (1 แถว/คลิป) พร้อมสถานะ Pending ให้คนตรวจ ID และคุณภาพ
   6) (ออปชัน) mel-spectrogram .png ต่อ occurrence ไว้รีวิวด้วยตา
 
 หมายเหตุ:
-  - rating ในชื่อไฟล์ตั้งเป็น R0 (auto/ยังไม่ตรวจ) เสมอ ให้คนมาแก้เป็น R1-R5 เอง
-    ส่วน provisional rating (เดาจาก confidence) อยู่ในคอลัมน์ของ summary.xlsx
+  - R0 = ยังไม่ตรวจ; หลังตรวจด้วยคน GUI คัดลอกคลิปที่อนุมัติไป Ready/ พร้อม R1-R5
+    ค่า AI confidence band ใน summary.xlsx ไม่ใช่คะแนนคุณภาพเสียง
   - เสียงประกาศ (voice notes) คู่มือใช้ -10 dB แต่ตรวจอัตโนมัติยาก จึง normalize -3 ทั้งหมด
   - โมเดล BirdNET เป็น CC BY-NC-SA 4.0 (ใช้เพื่อการศึกษา/วิจัย = non-commercial)
 
@@ -30,10 +29,13 @@ field_audio_to_ebird.py
 
 import argparse
 import gc
+import hashlib
 import json
 import math
 import os
 import re
+import shutil
+import signal
 import struct
 import subprocess
 import sys
@@ -48,6 +50,8 @@ import numpy as np
 from pydub import AudioSegment
 import pandas as pd
 
+from review_store import REVIEW_COLUMNS
+
 # birdnetlib (ดึง TensorFlow มาด้วย) import แบบ lazy ใน main()/process_file()
 # เพื่อให้โหมด --gen-spectrograms รันเป็น subprocess "ที่ไม่มี TensorFlow" ได้
 # (TensorFlow + librosa/matplotlib ใน process เดียวกัน = native crash 0xC0000005)
@@ -55,7 +59,7 @@ import pandas as pd
 # ======================== ตั้งค่า (ปรับตรงนี้ หรือ override ด้วย argument) ========================
 AUDIO_FILE       = ""
 OUTPUT_DIR       = str(Path.home() / "BirdNET_eBird")     # โฟลเดอร์ผลลัพธ์
-LAT, LON         = 12.80, 99.62                   # พิกัด fallback (ใช้เมื่อไม่ได้ระบุ + ไม่มีใน metadata)
+LAT, LON         = None, None                     # never silently invent a recording location
 REC_DATE         = None                           # YYYY-MM-DD override วันกรอง (None = เดาจากชื่อ/metadata/mtime)
 MIN_CONF         = 0.5                            # ความมั่นใจขั้นต่ำ 0-1
 USE_METADATA     = True                           # อ่านวัน/พิกัดจาก metadata ไฟล์ (ffprobe + BWF bext + XMP)
@@ -69,7 +73,6 @@ EXPORT_SPECTROGRAM = False                        # สร้าง mel-spectrog
 INCLUDE_ALT_SPECIES = True                        # ใส่ชนิดสำรองอันดับ 2-3 ใน summary
 CUT_UNKNOWN      = False                          # ตัดเสียงที่ BirdNET มั่นใจไม่พอ ไปเก็บ _Unknown/
 UNKNOWN_MIN_CONF = 0.25                           # floor: conf อยู่ [floor, min_conf) = unknown (ต่ำกว่า floor = ทิ้ง=noise)
-HIGHPASS_HZ      = 0                              # high-pass filter cutoff (Hz); 0 = ปิด. ตัดเสียงต่ำ (ลม/รถ/hum) เมื่อจำเป็น (คู่มือ eBird แนะ <=250)
 
 # regex พาร์สวันเวลาเริ่มอัดจากชื่อไฟล์ (group: ปี เดือน วัน [ชม.] [นาที] [วินาที])
 # รองรับ separator หลายแบบ: '25681111 1336', '2026-05-22 08_41', '20260608', 'YYYYMMDDHHMMSS'
@@ -78,6 +81,7 @@ FILENAME_DATETIME_REGEX = r"(\d{4})[-_.: ]?(\d{2})[-_.: ]?(\d{2})(?:[-_.T ]*(\d{
 EXPORT_FORMAT    = "wav"                          # eBird แนะนำ .wav
 DEFAULT_RATING   = "R0"                           # provisional rating ในชื่อไฟล์ (auto = ยังไม่ตรวจ)
 AUDIO_EXTS       = {".wav", ".mp3", ".flac", ".m4a", ".ogg", ".aif", ".aiff"}
+MAX_RAW_SEGMENT_BYTES = 350_000_000         # avoid exhausting RAM on long continuous spans
 # =============================================================================================
 
 
@@ -90,7 +94,22 @@ def _configure_runtime():
             pass
 
     import shutil
-    ffmpeg = shutil.which("ffmpeg")
+
+    def working_binary(*candidates):
+        for candidate in dict.fromkeys(str(p) for p in candidates if p):
+            try:
+                result = subprocess.run([candidate, "-version"], stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL, timeout=5)
+                if result.returncode == 0:
+                    return candidate
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+        return None
+
+    # ffmpeg/ffprobe ที่แนบมากับโปรแกรม (ข้าง app/) มาก่อน ไม่ขึ้นกับลำดับ PATH ของตัวเปิดแอป
+    bundle = Path(__file__).resolve().parent.parent
+    ffmpeg = working_binary(bundle / "ffmpeg", shutil.which("ffmpeg"),
+                            "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg")
     if not ffmpeg:
         candidates = [
             Path(os.environ.get("LOCALAPPDATA", "")) / r"Microsoft\WinGet\Links\ffmpeg.exe",
@@ -98,14 +117,16 @@ def _configure_runtime():
             Path(r"C:\ffmpeg\bin\ffmpeg.exe"),
             Path(getattr(sys, "_MEIPASS", "")) / "ffmpeg.exe",   # เผื่อ bundle ใน exe
         ]
-        ffmpeg = next((str(p) for p in candidates if p.is_file()), None)
+        ffmpeg = working_binary(*[p for p in candidates if p.is_file()])
     if ffmpeg:
         ffmpeg_dir = str(Path(ffmpeg).parent)
         os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ.get("PATH", "")
         AudioSegment.converter = ffmpeg
         AudioSegment.ffmpeg = ffmpeg
-        ffprobe = shutil.which("ffprobe") or str(Path(ffmpeg).with_name("ffprobe.exe"))
-        if Path(ffprobe).is_file():
+        ffprobe = working_binary(Path(ffmpeg).with_name("ffprobe"), Path(ffmpeg).with_name("ffprobe.exe"),
+                                 shutil.which("ffprobe"),
+                                 "/opt/homebrew/bin/ffprobe", "/usr/local/bin/ffprobe")
+        if ffprobe:
             AudioSegment.ffprobe = ffprobe
     else:
         print("Warning: ffmpeg not found — reading/writing audio may fail")
@@ -118,14 +139,6 @@ _configure_runtime()
 def sanitize(name: str) -> str:
     cleaned = "".join(c if c.isalnum() or c in " -_." else "_" for c in str(name)).strip()
     return cleaned or "unknown"
-
-
-def hms(seconds: float) -> str:
-    """offset วินาที -> 'HH:MM:SS'"""
-    s = int(round(seconds))
-    h, rem = divmod(s, 3600)
-    m, sec = divmod(rem, 60)
-    return f"{h:02d}:{m:02d}:{sec:02d}"
 
 
 def normalize_to(seg: AudioSegment, target_dbfs: float) -> AudioSegment:
@@ -159,6 +172,8 @@ def filename_datetime(name: str, regex: str):
 
 
 def _parse_meta_datetime(s: str):
+    """เวลาที่ไม่มี timezone = เวลาท้องถิ่นของเครื่องอัด; เวลาที่มี timezone (เช่น MP4/M4A
+    creation_time ...Z = UTC) แปลงเป็นเวลาของเครื่องนี้ ไม่งั้นในไทยจะคลาด 7 ชม."""
     s = str(s).strip()
     if not s:
         return None
@@ -169,9 +184,10 @@ def _parse_meta_datetime(s: str):
         except ValueError:
             continue
     try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00")).replace(tzinfo=None)
+        parsed = datetime.fromisoformat(s.replace("Z", "+00:00"))
     except ValueError:
         return None
+    return parsed.astimezone().replace(tzinfo=None) if parsed.tzinfo else parsed
 
 
 def _parse_iso6709(s: str):
@@ -216,13 +232,14 @@ def _read_wav_meta(path: Path, meta: dict):
                 elif cid in (b"_PMX", b"iXML"):
                     txt = data.decode("utf-8", "replace")
                     if meta.get("datetime") is None:
+                        # รับทั้งแบบ element <xmp:CreateDate>...</> และ attribute xmp:CreateDate="..."
                         mm = re.search(r"(?:xmp:CreateDate|exif:DateTimeOriginal|BWFOriginationDate)"
-                                       r'[>"]\s*([0-9:\-T ]{8,25})', txt)
+                                       r"""(?:>|=\s*["'])\s*([0-9:\-T ]{8,25})""", txt)
                         if mm:
                             meta["datetime"] = _parse_meta_datetime(mm.group(1))
                     if meta.get("lat") is None:
-                        mlat = re.search(r"exif:GPSLatitude[>\"]([^<\"]+)", txt)
-                        mlon = re.search(r"exif:GPSLongitude[>\"]([^<\"]+)", txt)
+                        mlat = re.search(r"""exif:GPSLatitude(?:>|=\s*["'])([^<"']+)""", txt)
+                        mlon = re.search(r"""exif:GPSLongitude(?:>|=\s*["'])([^<"']+)""", txt)
                         if mlat and mlon:
                             la, lo = _gps_exif(mlat.group(1)), _gps_exif(mlon.group(1))
                             if la is not None and lo is not None:
@@ -232,12 +249,12 @@ def _read_wav_meta(path: Path, meta: dict):
 
 
 def _gps_exif(s: str):
-    """'12,48.0N' / '12.8' -> ทศนิยม (รองรับ exif GPS แบบองศา,ลิปดา + ทิศ)"""
+    """'12,48.0N' / '12,48,30N' / '12.8' -> ทศนิยม (exif GPS แบบองศา,ลิปดา[,ฟิลิปดา] + ทิศ)"""
     s = str(s).strip()
-    m = re.match(r"(\d+),([\d.]+)([NSEW]?)", s)
+    m = re.match(r"(\d+),(\d+(?:\.\d+)?)(?:,(\d+(?:\.\d+)?))?\s*([NSEW]?)", s)
     if m:
-        deg = float(m.group(1)) + float(m.group(2)) / 60.0
-        if m.group(3) in ("S", "W"):
+        deg = float(m.group(1)) + float(m.group(2)) / 60.0 + float(m.group(3) or 0) / 3600.0
+        if m.group(4) in ("S", "W"):
             deg = -deg
         return deg
     try:
@@ -253,9 +270,9 @@ def parse_coords(text):
         return None
     t = str(text).strip()
     pats = [
+        r"!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)",        # place URL !3dlat!4dlon = หมุด (ก่อน @ ที่เป็นกลางจอแผนที่)
         r"@(-?\d+\.\d+),\s*(-?\d+\.\d+)",        # .../@lat,lon,zoom
         r"[?&]q=(-?\d+\.\d+),\s*(-?\d+\.\d+)",    # ...?q=lat,lon
-        r"!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)",        # place URL !3dlat!4dlon
         r"(-?\d+\.\d+)\s*[, ]\s*(-?\d+\.\d+)",    # lat,lon หรือ lat lon
     ]
     for p in pats:
@@ -286,8 +303,12 @@ def read_audio_metadata(path: Path) -> dict:
             for blk in [data.get("format", {})] + data.get("streams", []):
                 for k, v in (blk.get("tags") or {}).items():
                     tags[k.lower()] = v
-            for k in ("creation_time", "date", "date_recorded", "icrd",
-                      "com.apple.quicktime.creationdate", "originationdate"):
+            if "origination_date" in tags:        # BWF bext ที่ ffprobe แยกเป็นวันที่ + เวลา
+                tags["originationdate"] = f"{tags['origination_date']} {tags.get('origination_time', '')}"
+            # เรียงจากแม่นสุด: quicktime มี offset ท้องถิ่น, bext = เวลาเครื่องอัด,
+            # creation_time = UTC, date/icrd มักมีแต่วันที่ (จะได้เวลา 00:00)
+            for k in ("com.apple.quicktime.creationdate", "originationdate", "creation_time",
+                      "date_recorded", "date", "icrd"):
                 if k in tags:
                     meta["datetime"] = _parse_meta_datetime(tags[k])
                     if meta["datetime"]:
@@ -303,8 +324,8 @@ def read_audio_metadata(path: Path) -> dict:
                 if k in tags and str(tags[k]).strip():
                     meta["place"] = str(tags[k]).strip()
                     break
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:
+            print(f"Warning: could not read ffprobe metadata from {path}: {exc}")
     # WAV BWF/XMP (ffprobe ไม่ดึง bext/_PMX)
     if path.suffix.lower() == ".wav":
         _read_wav_meta(path, meta)
@@ -322,19 +343,6 @@ def merge_occurrences(items, gap_sec):
         else:
             occ.append({"start": s, "end": e, "max_conf": c, "n_det": 1})
     return occ
-
-
-def top_candidates(start, end, dets, n=3):
-    """top-N ชนิดที่ BirdNET เดา (conf สูงสุดต่อชนิด) ที่ทับช่วง [start,end] — ไว้ช่วย
-    แคบตัวเลือก ID คลิป _Unknown. dets = list ของ dict. คืน [(common, scientific, conf), ...]"""
-    cand = {}
-    for d in dets:
-        if d["end_time"] >= start and d["start_time"] <= end:
-            c = d["common_name"]
-            if c not in cand or d["confidence"] > cand[c][1]:
-                cand[c] = (d["scientific_name"], d["confidence"])
-    return [(common, sci, conf) for common, (sci, conf)
-            in sorted(cand.items(), key=lambda x: -x[1][1])[:n]]
 
 
 def alt_species_for(start, end, all_dets, primary_common, topn=2):
@@ -458,86 +466,6 @@ def freq_stats(seg: AudioSegment, call_start_s=None, call_end_s=None,
     return round(peak_hz), round(float(fb[lo])), round(float(fb[hi]))
 
 
-def apply_highpass(seg: AudioSegment, cutoff_hz):
-    """high-pass filter (Butterworth order 4, zero-phase) ตัดเสียงต่ำกว่า cutoff_hz
-    (ลม/รถ/hum). cutoff_hz<=0 หรือไม่มี scipy -> คืน seg เดิม. คง bit depth/ch เดิม"""
-    if not cutoff_hz or cutoff_hz <= 0:
-        return seg
-    sr = seg.frame_rate
-    nyq = sr / 2.0
-    if cutoff_hz >= nyq:
-        return seg
-    try:
-        from scipy.signal import butter, sosfiltfilt
-    except Exception:  # noqa: BLE001  ไม่มี scipy -> ข้าม
-        return seg
-    samples = np.array(seg.get_array_of_samples())
-    dt = samples.dtype
-    arr = samples.astype(np.float64)
-    ch = seg.channels
-    if ch > 1:
-        arr = arr.reshape(-1, ch)
-    sos = butter(4, cutoff_hz / nyq, btype="highpass", output="sos")
-    arr = sosfiltfilt(sos, arr, axis=0)
-    maxv = float(1 << (8 * seg.sample_width - 1)) - 1
-    arr = np.clip(arr, -maxv, maxv).astype(dt)
-    return AudioSegment(np.ascontiguousarray(arr).tobytes(), frame_rate=sr,
-                        sample_width=seg.sample_width, channels=ch)
-
-
-def xc_url(scientific) -> str:
-    """ลิงก์หน้า xeno-canto ของชนิดนั้น (เสียงอ้างอิงไว้ recheck/เทียบ ID ด้วยหูเอง)
-    'Genus species' -> https://xeno-canto.org/species/Genus-species"""
-    parts = str(scientific or "").strip().split()
-    if len(parts) < 2:
-        return ""
-    return f"https://xeno-canto.org/species/{parts[0]}-{parts[1]}"
-
-
-def xc_download_refs(gen, sp, common, key, country, n, dest_root: Path) -> int:
-    """โหลดเสียงอ้างอิง Xeno-Canto v3 (คุณภาพ A) ของชนิดนี้ n ไฟล์ -> dest_root/<common>/
-    ไว้ฟังเทียบ recheck ID. คืนจำนวนไฟล์ที่ได้. error/ไม่มีเน็ต -> คืน 0 (ไม่ล้ม batch)"""
-    import requests
-    base = "https://xeno-canto.org/api/3/recordings"
-
-    def _q(qstr):
-        r = requests.get(base, params={"query": qstr, "key": key,
-                                       "per_page": max(n * 2, 5)}, timeout=30)
-        r.raise_for_status()
-        return r.json().get("recordings", []) or []
-
-    q = f"gen:{gen} sp:{sp} q:A"
-    try:
-        recs = _q(q + (f" cnt:{country}" if country else ""))
-        if not recs and country:
-            recs = _q(q)                     # ไม่มีในประเทศ -> ทั่วโลก
-    except Exception as exc:  # noqa: BLE001
-        print(f"    (XC: ดึงรายการ {common} ไม่ได้: {exc})")
-        return 0
-    dest = dest_root / sanitize(common)
-    got = 0
-    for rec in recs[:n]:
-        url = rec.get("file")
-        name = sanitize(rec.get("file-name") or f"XC{rec.get('id')}.mp3")
-        if not url:
-            continue
-        fp = dest / name
-        if fp.exists():
-            got += 1
-            continue
-        try:
-            dest.mkdir(parents=True, exist_ok=True)
-            with requests.get(url, timeout=90, stream=True) as resp:
-                resp.raise_for_status()
-                with open(fp, "wb") as f:
-                    for chunk in resp.iter_content(8192):
-                        f.write(chunk)
-            got += 1
-        except Exception as exc:  # noqa: BLE001
-            print(f"    (XC: โหลด {name} ไม่ได้: {exc})")
-    return got
-
-
 def conf_to_stars(c: float) -> int:
     """provisional rating หยาบ ๆ จาก confidence (1-4, ไม่ให้ 5 เพราะเป็น auto)"""
     if c >= 0.9:
@@ -549,14 +477,12 @@ def conf_to_stars(c: float) -> int:
     return 1
 
 
-def unique_path(folder: Path, base: str, fmt: str) -> Path:
-    """กันชื่อไฟล์ชนกัน (occurrence คนละครั้งในนาทีเดียวกัน)"""
-    p = folder / f"{base}.{fmt}"
-    i = 2
-    while p.exists():
-        p = folder / f"{base}-{i}.{fmt}"
-        i += 1
-    return p
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def save_mel_spectrogram(seg: AudioSegment, png_path: Path, title: str) -> bool:
@@ -634,20 +560,30 @@ def gen_spectrograms(dirs):
         if not d.is_dir():
             continue
         meta = {}
+        wav_paths = []
         summ = d / "summary.xlsx"
+        fallback_scan = not summ.exists()
         if summ.exists():
             try:
                 sdf = pd.read_excel(summ)
                 for _, r in sdf.iterrows():
-                    meta[Path(str(r["File"])).name] = r
+                    wav = _safe_generated_path(d, str(r["File"]))
+                    if wav.is_file() and wav.suffix.lower() == ".wav":
+                        wav_paths.append(wav)
+                        meta[wav] = r
             except Exception as exc:  # noqa: BLE001
                 print(f"  (could not read summary.xlsx, using filenames: {exc})")
-        for wav in sorted(d.rglob("*.wav")):
+                wav_paths = []
+                fallback_scan = True
+        if fallback_scan:
+            wav_paths = [wav for wav in d.rglob("*.wav")
+                         if "Ready" not in wav.relative_to(d).parts]
+        for wav in sorted(set(wav_paths)):
             png = wav.with_suffix(".png")
             if png.exists():
                 skipped += 1
                 continue
-            title = _spectrogram_title(meta.get(wav.name), wav)
+            title = _spectrogram_title(meta.get(wav), wav)
             try:
                 seg = AudioSegment.from_file(str(wav))
                 if save_mel_spectrogram(seg, png, title):
@@ -659,6 +595,7 @@ def gen_spectrograms(dirs):
                 failed += 1
                 print(f"  !! spectrogram {wav.name}: {exc}")
     print(f"spectrograms done: created {made}, skipped existing {skipped}, failed {failed}")
+    return failed
 
 
 def run_spectrogram_subprocess(date_dirs):
@@ -776,64 +713,182 @@ def _read_segment(path: Path, info, start_s: float, end_s: float):
     if e <= s:
         return None
     dtype, sw, _ = _depth(info.subtype)
+    estimated_bytes = (e - s) * info.channels * sw
+    if estimated_bytes > MAX_RAW_SEGMENT_BYTES:
+        raise ValueError(
+            f"Continuous span needs about {estimated_bytes / 1e6:.0f} MB of raw audio. "
+            "Use a shorter span or prepare this long continuous recording in an audio editor."
+        )
     data, _meta = sf.read(str(path), start=s, stop=e, dtype=dtype, always_2d=True)
     return _seg_from_sf(data, sr, sw)
 
 
 def _export_clip(clip: AudioSegment, out_path: Path, fmt: str, subtype):
     """export คง bit depth ด้วย soundfile (รองรับ PCM_24); ไม่งั้น fallback pydub"""
-    if subtype and fmt.lower() in ("wav", "flac", "aiff", "aif"):
-        import soundfile as sf
-        arr = np.array(clip.get_array_of_samples())
-        if clip.channels > 1:
-            arr = arr.reshape((-1, clip.channels))
-        sf.write(str(out_path), arr, clip.frame_rate, subtype=subtype)
-    else:
-        clip.export(out_path, format=fmt)
+    temporary = out_path.with_name(out_path.stem + ".tmp" + out_path.suffix)
+    try:
+        if subtype and fmt.lower() in ("wav", "flac", "aiff", "aif"):
+            import soundfile as sf
+            arr = np.array(clip.get_array_of_samples())
+            if clip.channels > 1:
+                arr = arr.reshape((-1, clip.channels))
+            sf.write(str(temporary), arr, clip.frame_rate, subtype=subtype)
+        else:
+            clip.export(temporary, format=fmt)
+        os.replace(temporary, out_path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
-def _already_processed(date_folder: Path, source_name: str) -> bool:
-    """ไฟล์นี้เคยตัดแล้วหรือยัง — ดูจากคอลัมน์ 'Source file' ใน summary.xlsx ของวันนั้น"""
+def _already_processed(date_folder: Path, sid: str) -> bool:
+    """Skip only when this exact source version and all its clips are present."""
     summ = date_folder / "summary.xlsx"
     if not summ.exists():
         return False
     try:
-        df = pd.read_excel(summ)
-        return "Source file" in df.columns and (df["Source file"].astype(str) == source_name).any()
+        df = pd.read_excel(summ, dtype={"Source ID": str})
+        if not {"Source ID", "File", "Generated sha256"}.issubset(df.columns):
+            return False
+        matching = df[df["Source ID"].astype(str) == sid]
+
+        def intact(row):
+            clip = date_folder / str(row["File"])
+            if clip.is_file():
+                return file_sha256(clip) == str(row["Generated sha256"])
+            return row.get("Review status") == "Rejected"   # ผู้ตรวจลบคลิปที่ไม่ใช้ทิ้งเอง
+        return not matching.empty and all(intact(row) for _, row in matching.iterrows())
     except Exception:  # noqa: BLE001
         return False
 
 
+def _previous_hashes(date_folder: Path, sid: str) -> dict:
+    summary = date_folder / "summary.xlsx"
+    if not summary.exists():
+        return {}
+    df = pd.read_excel(summary, dtype={"Source ID": str})
+    if not {"Source ID", "File", "Generated sha256"}.issubset(df.columns):
+        return {}
+    return {str(row["File"]): str(row["Generated sha256"])
+            for _, row in df[df["Source ID"] == sid].iterrows()}
+
+
+def _safe_generated_path(date_folder: Path, relative: str) -> Path:
+    candidate = (date_folder / relative).resolve()
+    if not candidate.is_relative_to(date_folder.resolve()):
+        raise ValueError("Generated clip path is outside output folder")
+    return candidate
+
+
+def _check_generated_collision(date_folder: Path, out_path: Path, previous: dict, new_hash=None):
+    """ทับได้เฉพาะไฟล์ของโปรแกรมเอง: summary บันทึก hash ไว้ หรือเหมือนคลิปใหม่ทุกไบต์
+    (เหลือจากรอบที่ถูกหยุดกลางคัน ก่อนเขียน summary)"""
+    if not out_path.exists():
+        return
+    relative = str(out_path.relative_to(date_folder))
+    current = file_sha256(out_path)
+    if current != previous.get(relative) and current != new_hash:
+        raise FileExistsError(f"Existing clip was changed or is not tracked: {out_path}")
+
+
+def _audio_duration(path: Path) -> float:
+    """ความยาวไฟล์ (วินาที), 0 ถ้าอ่านไม่ได้"""
+    try:
+        import soundfile as sf
+        return float(sf.info(str(path)).duration)
+    except Exception:  # noqa: BLE001
+        pass
+    ffprobe = getattr(AudioSegment, "ffprobe", None)
+    if ffprobe:
+        try:
+            r = subprocess.run([ffprobe, "-v", "quiet", "-show_entries", "format=duration",
+                                "-of", "default=nw=1:nk=1", str(path)],
+                               capture_output=True, text=True, timeout=30)
+            return float(r.stdout.strip())
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            pass
+    return 0.0
+
+
+def source_id(path: Path) -> str:
+    """Fast content fingerprint stable when a recording folder is moved."""
+    stat = path.stat()
+    digest = hashlib.sha256(str(stat.st_size).encode("ascii"))
+    with path.open("rb") as source:
+        digest.update(source.read(128 * 1024))
+        if stat.st_size > 128 * 1024:
+            source.seek(max(0, stat.st_size - 128 * 1024))
+            digest.update(source.read(128 * 1024))
+    return digest.hexdigest()[:12]
+
+
+def require_recording_context(files, date_override, use_meta, lat_arg, lon_arg):
+    """Fail before loading BirdNET when date or location was not supplied."""
+    if date_override and lat_arg is not None and lon_arg is not None:
+        return
+    missing_dates, missing_coords = [], []
+    for path in files:
+        meta = read_audio_metadata(path) if use_meta else {}
+        if not date_override and meta.get("datetime") is None:
+            missing_dates.append(str(path))
+        if ((lat_arg is None and meta.get("lat") is None) or
+                (lon_arg is None and meta.get("lon") is None)):
+            missing_coords.append(str(path))
+    messages = []
+    if missing_dates:
+        messages.append("Recording date missing from audio metadata. Enter the date "
+                        "in the Date field (YYYY-MM-DD), or use --date YYYY-MM-DD:\n" +
+                        "\n".join(f"  - {name}" for name in missing_dates))
+    if missing_coords:
+        messages.append("Recording location missing from audio metadata. Enter "
+                        "coordinates in the GUI, or use --coords LAT,LON:\n" +
+                        "\n".join(f"  - {name}" for name in missing_coords))
+    if messages:
+        raise ValueError("\n\n".join(messages))
 def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg,
                  cfg_lat, cfg_lon, date_override, use_meta, min_conf, gap, lead, tail,
                  target_dbfs, fmt, make_mono, incl_alt, place_arg, dt_regex, force=False,
                  use_filetime=False, cut_unknown=False, unknown_floor=UNKNOWN_MIN_CONF,
-                 highpass_hz=HIGHPASS_HZ):
+                 keep_continuous=False, start_time_override=None):
     """
-    วิเคราะห์ + ตัดคลิป 1 ไฟล์ คืน (rows, date_folder)
-    วัน/พิกัด/สถานที่: argument > ชื่อไฟล์ > metadata ไฟล์ > default
+    วิเคราะห์ + ตัดคลิป 1 ไฟล์ คืน (rows, date_folder); rows = None เมื่อข้ามเพราะเคยทำแล้ว
+    วัน/พิกัด/สถานที่: argument > metadata ไฟล์ > ชื่อไฟล์ > เวลาไฟล์ > default
     spectrogram สร้างทีหลังใน subprocess แยก (กัน native crash)
     """
     from birdnetlib import Recording  # lazy: เลี่ยงโหลด TensorFlow ในโหมด gen-spectrograms
 
-    meta = read_audio_metadata(audio_path) if (use_meta and not use_filetime) else {}
+    meta = read_audio_metadata(audio_path) if use_meta else {}
+    if date_override is None and meta.get("datetime") is None:
+        raise ValueError("Recording date missing from metadata; enter --date YYYY-MM-DD")
+    if ((lat_arg is None and meta.get("lat") is None) or
+            (lon_arg is None and meta.get("lon") is None)):
+        raise ValueError("Recording location missing from metadata; enter --coords LAT,LON")
+    sid = source_id(audio_path)
 
-    # ---- วันเวลาเริ่มอัด ----  ลำดับ: --date > (ชื่อไฟล์ > metadata ถ้าไม่บังคับ filetime) > เวลาไฟล์
+    # ---- วันเวลาเริ่มอัด ----  ลำดับ: --date > (metadata > ชื่อไฟล์ ถ้าไม่บังคับ filetime) > เวลาไฟล์
     fn_dt = None if use_filetime else filename_datetime(audio_path.name, dt_regex)
-    if fn_dt:
-        rec_dt, dt_src = fn_dt, "filename"
-    elif meta.get("datetime"):
+    if meta.get("datetime") and not use_filetime:
         rec_dt, dt_src = meta["datetime"], "metadata"
+    elif fn_dt:
+        rec_dt, dt_src = fn_dt, "filename time"
     else:
-        # ใช้เวลาไฟล์ที่ "เก่าสุด" = เวลาเริ่มบันทึก (ctime มัก = ตอนสร้างไฟล์/เริ่มอัด,
-        # mtime = เขียนจบ; แต่ถ้า copy มา ctime จะใหม่ -> min() เลือกอันที่ใกล้วันอัดสุด)
+        # mtime = ตอนเครื่องอัดปิดไฟล์ = "จบ" การบันทึก -> ลบความยาวไฟล์ออก
+        # เวลาสร้างไฟล์ (st_birthtime บน mac; st_ctime บน Windows รุ่นเก่า — บน mac ctime
+        # คือเวลาแก้ metadata ไม่ใช่เวลาสร้าง) ใช้ถ้าเก่ากว่า; copy มาใหม่ค่านี้จะใหม่กว่าเลยไม่ถูกเลือก
         stt = audio_path.stat()
-        rec_dt = datetime.fromtimestamp(min(stt.st_mtime, stt.st_ctime))
-        dt_src = "file time (recording start)"
+        starts = [stt.st_mtime - _audio_duration(audio_path)]
+        created = getattr(stt, "st_birthtime", stt.st_ctime if os.name == "nt" else None)
+        if created is not None:
+            starts.append(created)
+        rec_dt = datetime.fromtimestamp(min(starts)).replace(microsecond=0)
+        dt_src = "file timestamp (unverified recording time)"
     if date_override:
         rec_dt = rec_dt.replace(year=date_override.year, month=date_override.month,
                                 day=date_override.day)
-        dt_src = "--date"
+        dt_src = f"manual date; {dt_src}"
+    if start_time_override:
+        rec_dt = rec_dt.replace(hour=start_time_override.hour, minute=start_time_override.minute,
+                                second=start_time_override.second)
+        dt_src = f"{dt_src}; manual start time"
 
     # ---- พิกัด ----
     def _pick(av, mv, cv):
@@ -854,9 +909,22 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
     date_folder = out_root / date_tag
 
     # ข้ามถ้าไฟล์นี้เคยตัดแล้ว (เช็คก่อน analyze เพื่อไม่เสียเวลา)
-    if not force and _already_processed(date_folder, audio_path.name):
+    if not force and _already_processed(date_folder, sid):
         print(f"\n=== {audio_path.name} ===  skip: already processed in {date_tag}/ (use --force to redo)")
-        return [], None
+        return None, date_folder
+    previous_hashes = _previous_hashes(date_folder, sid)
+    staging_dir = date_folder / ".staging" / sid
+    shutil.rmtree(staging_dir, ignore_errors=True)
+    staged_files = []
+
+    def stage_clip(clip, out_path):
+        staged = staging_dir / out_path.relative_to(date_folder)
+        staged.parent.mkdir(parents=True, exist_ok=True)
+        _export_clip(clip, staged, fmt, export_subtype)
+        digest = file_sha256(staged)
+        _check_generated_collision(date_folder, out_path, previous_hashes, digest)
+        staged_files.append((staged, out_path, digest))
+        return digest
 
     print(f"\n=== {audio_path.name} ===")
     print(f"  recorded {rec_dt:%Y-%m-%d %H:%M:%S} (from {dt_src}) | "
@@ -877,7 +945,7 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
           + (f" + {len(low_dets)} low-conf -> _Unknown" if cut_unknown else ""))
     if not dets and not low_dets:
         print("  no confident bird sounds — skipping this file (try lowering --min-conf)")
-        return [], None
+        return [], date_folder
 
     print("  loading source audio (full quality) ...")
     src_mode, src = _open_source(audio_path)
@@ -899,6 +967,11 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
     rows = []
     for (common, sci), items in sorted(by_species.items()):
         occ = merge_occurrences(items, gap)
+        if keep_continuous and len(occ) > 1:
+            print(f"  preserving continuous recording of {common}; confirm it is one individual")
+            occ = [{"start": occ[0]["start"], "end": occ[-1]["end"],
+                    "max_conf": max(o["max_conf"] for o in occ),
+                    "n_det": sum(o["n_det"] for o in occ)}]
         sp_dir = date_folder / sanitize(common)
         sp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -915,34 +988,32 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
                 continue
             if make_mono and clip.channels > 1:
                 clip = clip.set_channels(1)
-            clip = apply_highpass(clip, highpass_hz)   # ตัดเสียงต่ำ (ลม) ถ้าเปิด
 
             # วัดคุณภาพ "ก่อน" normalize (peak จริงของเสียง)
             peak_dbfs = clip.max_dBFS
             clipping = peak_dbfs >= -0.1
-            snr = estimate_snr(clip)
-            peak_hz, flo, fhi = freq_stats(clip, o["start"] - start_s, o["end"] - start_s)
+            stats_clip = clip[:15000]
+            snr = estimate_snr(stats_clip)
+            peak_hz, flo, fhi = freq_stats(stats_clip, o["start"] - start_s, o["end"] - start_s)
 
             clip = normalize_to(clip, target_dbfs)
 
             occ_clock = rec_dt + timedelta(seconds=o["start"])
             hhmm = occ_clock.strftime("%H%M")
             genus_sp = sanitize(sci).replace(" ", ".")
-            base = f"{date_tag}_{hhmm}_{genus_sp}_{DEFAULT_RATING}"
-            out_path = unique_path(sp_dir, base, fmt)
-            _export_clip(clip, out_path, fmt, export_subtype)
+            base = f"{date_tag}_{hhmm}_{genus_sp}_{sid}_{idx:03d}_{DEFAULT_RATING}"
+            out_path = sp_dir / f"{base}.{fmt}"
+            generated_hash = stage_clip(clip, out_path)
 
-            alts = alt_species_for(o["start"], o["end"], all_dets, common, topn=3) if incl_alt else []
+            alts = alt_species_for(o["start"], o["end"], all_dets, common) if incl_alt else []
             alt1 = alts[0] if len(alts) >= 1 else ("", "")
             alt2 = alts[1] if len(alts) >= 2 else ("", "")
-            alt3 = alts[2] if len(alts) >= 3 else ("", "")
 
             start_clock = occ_clock.strftime("%H:%M:%S")
             dur = round(len(clip) / 1000.0, 1)
             rows.append({
                 "Species (common)": common,
                 "Species (scientific)": sci,
-                "Xeno-Canto (ref audio)": xc_url(sci),
                 "Occurrence #": idx,
                 "Start offset (s)": round(o["start"], 1),
                 "Clock time": start_clock,
@@ -953,17 +1024,23 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
                 "Alt1 conf": round(alt1[1], 3) if alt1[1] != "" else "",
                 "Alt species 2": alt2[0],
                 "Alt2 conf": round(alt2[1], 3) if alt2[1] != "" else "",
-                "Alt species 3": alt3[0],
-                "Alt3 conf": round(alt3[1], 3) if alt3[1] != "" else "",
                 "Peak dBFS": round(peak_dbfs, 1),
                 "Clipping": "YES" if clipping else "",
-                "SNR (dB approx)": snr if snr is not None else "",
+                "SNR (dB approx, first 15s)": snr if snr is not None else "",
                 "Peak freq (Hz)": peak_hz if peak_hz is not None else "",
                 "Freq low (Hz)": flo if flo is not None else "",
                 "Freq high (Hz)": fhi if fhi is not None else "",
-                "Provisional rating": conf_to_stars(o["max_conf"]),
+                "AI confidence band (1-4)": conf_to_stars(o["max_conf"]),
                 "Place": place or "",
                 "File": str(out_path.relative_to(date_folder)),
+                "Generated sha256": generated_hash,
+                "Source file": audio_path.name,
+                "Source path": str(audio_path.resolve()),
+                "Source ID": sid,
+                "Date/time source": dt_src,
+                "Latitude": lat,
+                "Longitude": lon,
+                "Review status": "Pending",
             })
             print(f"    -> {common:<28} #{idx:02d} {start_clock} {dur:4.0f}s "
                   f"conf {o['max_conf']:.2f}  peak {peak_dbfs:4.1f}dB"
@@ -989,79 +1066,187 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
                 continue
             if make_mono and clip.channels > 1:
                 clip = clip.set_channels(1)
-            clip = apply_highpass(clip, highpass_hz)   # ตัดเสียงต่ำ (ลม) ถ้าเปิด
             peak_dbfs = clip.max_dBFS
             clipping = peak_dbfs >= -0.1
-            snr = estimate_snr(clip)
-            peak_hz, flo, fhi = freq_stats(clip, o["start"] - start_s, o["end"] - start_s)
+            stats_clip = clip[:15000]
+            snr = estimate_snr(stats_clip)
+            peak_hz, flo, fhi = freq_stats(stats_clip, o["start"] - start_s, o["end"] - start_s)
             clip = normalize_to(clip, target_dbfs)
-            # top-3 ชนิดที่ BirdNET เดาในช่วงนี้ (แค่ตัวเลือกให้คนฟังเทียบ ไม่ยืนยัน)
-            cands = top_candidates(o["start"], o["end"], low_dets, 3)
-            c1 = cands[0] if len(cands) >= 1 else ("", "", "")
-            c2 = cands[1] if len(cands) >= 2 else ("", "", "")
-            c3 = cands[2] if len(cands) >= 3 else ("", "", "")
+            # BirdNET เดาชนิด conf สูงสุดในช่วงนี้ (แค่ใบ้ ไม่ยืนยัน)
+            guess = max((d for d in low_dets
+                         if d["end_time"] >= o["start"] and d["start_time"] <= o["end"]),
+                        key=lambda d: d["confidence"], default=None)
             made += 1
             unk_dir.mkdir(parents=True, exist_ok=True)
             occ_clock = rec_dt + timedelta(seconds=o["start"])
             hhmm = occ_clock.strftime("%H%M")
-            base = f"{date_tag}_{hhmm}_UNKNOWN_{DEFAULT_RATING}"
-            out_path = unique_path(unk_dir, base, fmt)
-            _export_clip(clip, out_path, fmt, export_subtype)
+            base = f"{date_tag}_{hhmm}_UNKNOWN_{sid}_{made:03d}_{DEFAULT_RATING}"
+            out_path = unk_dir / f"{base}.{fmt}"
+            generated_hash = stage_clip(clip, out_path)
+            g_common = guess["common_name"] if guess else ""
+            g_conf = round(guess["confidence"], 3) if guess else ""
             start_clock = occ_clock.strftime("%H:%M:%S")
             dur = round(len(clip) / 1000.0, 1)
             rows.append({
                 "Species (common)": "_Unknown",
-                # ชื่อวิทย์ = ตัวเลือกอันดับ 1 (ไว้ทำลิงก์/โหลดเสียง XC) ไม่ใช่การยืนยัน
-                "Species (scientific)": c1[1],
-                "Xeno-Canto (ref audio)": xc_url(c1[1]),
+                "Species (scientific)": "",
                 "Occurrence #": made,
                 "Start offset (s)": round(o["start"], 1),
                 "Clock time": start_clock,
                 "End offset (s)": round(o["end"], 1),
                 "Duration (s)": dur,
                 "Max confidence": round(o["max_conf"], 3),
-                # top-3 ตัวเลือกที่ BirdNET เดา (conf ต่ำ ไม่ยืนยัน — ฟังเทียบเอง)
-                "Alt species 1": c1[0],
-                "Alt1 conf": round(c1[2], 3) if c1[2] != "" else "",
-                "Alt species 2": c2[0],
-                "Alt2 conf": round(c2[2], 3) if c2[2] != "" else "",
-                "Alt species 3": c3[0],
-                "Alt3 conf": round(c3[2], 3) if c3[2] != "" else "",
+                "Alt species 1": g_common,       # BirdNET เดา (conf ต่ำ ไม่ยืนยัน)
+                "Alt1 conf": g_conf,
+                "Alt species 2": "",
+                "Alt2 conf": "",
                 "Peak dBFS": round(peak_dbfs, 1),
                 "Clipping": "YES" if clipping else "",
-                "SNR (dB approx)": snr if snr is not None else "",
+                "SNR (dB approx, first 15s)": snr if snr is not None else "",
                 "Peak freq (Hz)": peak_hz if peak_hz is not None else "",
                 "Freq low (Hz)": flo if flo is not None else "",
                 "Freq high (Hz)": fhi if fhi is not None else "",
-                "Provisional rating": "",
+                "AI confidence band (1-4)": "",
                 "Place": place or "",
                 "File": str(out_path.relative_to(date_folder)),
+                "Generated sha256": generated_hash,
+                "Source file": audio_path.name,
+                "Source path": str(audio_path.resolve()),
+                "Source ID": sid,
+                "Date/time source": dt_src,
+                "Latitude": lat,
+                "Longitude": lon,
+                "Review status": "Pending",
             })
-            cand_txt = " | ".join(f"{c[0]} {c[2]:.2f}" for c in cands) or "?"
             print(f"    -> {'_Unknown':<28} #{made:02d} {start_clock} {dur:4.0f}s "
-                  f"maybe: {cand_txt}")
+                  f"maybe {g_common or '?'} (conf {o['max_conf']:.2f})")
         if made:
             print(f"  _Unknown: {made} clips -> {unk_dir}")
+
+    backups = []
+    committed = []
+    try:
+        for staged, final, digest in staged_files:
+            # spectrogram เดิมใช้ต่อได้เฉพาะเมื่อคลิปเหมือนเดิมทุกไบต์ (gen_spectrograms ข้าม .png ที่มีอยู่)
+            png = final.with_suffix(".png")
+            replaced = [final] if final.exists() else []
+            if png.exists() and (not replaced or file_sha256(final) != digest):
+                replaced.append(png)
+            for old in replaced:
+                backup = staging_dir / "_backup" / old.relative_to(date_folder)
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(old, backup)
+                backups.append((backup, old))
+            os.replace(staged, final)
+            committed.append(final)
+    except BaseException:   # รวม KeyboardInterrupt (ปิดแอป/Ctrl+C) ไม่งั้น finally ลบ backup ทิ้ง
+        for final in committed:
+            final.unlink(missing_ok=True)
+        for backup, final in reversed(backups):
+            os.replace(backup, final)
+        raise
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        try:
+            staging_dir.parent.rmdir()          # ลบ .staging/ ถ้าว่างแล้ว
+        except OSError:
+            pass
 
     del src
     gc.collect()
     return rows, date_folder
 
 
-def write_summary(rows, xlsx_path: Path):
+def _carry_over_reviews(new, superseded):
+    """คลิปที่สร้างใหม่ได้เหมือนเดิมทุกไบต์ (ชื่อ + sha256 เดิม) เก็บผลตรวจของคนไว้"""
+    if new.empty or superseded.empty or not {"File", "Generated sha256"}.issubset(superseded.columns):
+        return new
+    reviewed = {(str(r["File"]), str(r["Generated sha256"])): r for _, r in superseded.iterrows()}
+    new = new.copy()
+    for index, row in new.iterrows():
+        old = reviewed.get((str(row["File"]), str(row["Generated sha256"])))
+        if old is None:
+            continue
+        for column in REVIEW_COLUMNS:
+            if column in old.index and not pd.isna(old[column]):
+                new.loc[index, column] = old[column]
+    return new
+
+
+def write_summary(rows, xlsx_path: Path, processed_sources=(), processed_ids=(), keep_reviews=True):
+    """keep_reviews=False (--force) = ตั้งผลตรวจกลับเป็น Pending ตามที่แจ้งผู้ใช้ไว้"""
     df = pd.DataFrame(rows)
+    superseded = pd.DataFrame()
+    processed_sources = set(processed_sources)
+    processed_ids = set(processed_ids) | {r["Source ID"] for r in rows}
     # merge กับ summary เดิมของวันนั้น (กันไฟล์ที่ถูก skip หายไปจากสรุป)
     if xlsx_path.exists():
         try:
-            df = pd.concat([pd.read_excel(xlsx_path), df], ignore_index=True)
-        except Exception:  # noqa: BLE001
-            pass
+            old = pd.read_excel(xlsx_path, dtype={"Source ID": str})
+            if "Provisional rating" in old.columns:
+                legacy = old.pop("Provisional rating")
+                if "AI confidence band (1-4)" in old.columns:
+                    old["AI confidence band (1-4)"] = old["AI confidence band (1-4)"].fillna(legacy)
+                else:
+                    old["AI confidence band (1-4)"] = legacy
+            if "Source path" in old.columns:
+                replace = old["Source path"].isin(processed_sources)
+                if "Source ID" in old.columns:
+                    replace = replace | old["Source ID"].isin(processed_ids)
+            elif "Source ID" in old.columns:
+                replace = old["Source ID"].isin(processed_ids)
+            elif "Source file" in old.columns:
+                replace = old["Source file"].isin({r["Source file"] for r in rows})
+            else:
+                replace = pd.Series(False, index=old.index)
+            superseded = old[replace]
+            kept = old[~replace]
+        except Exception as exc:
+            raise RuntimeError(f"Cannot read existing summary; refusing to overwrite {xlsx_path}: {exc}") from exc
+        if keep_reviews:
+            df = _carry_over_reviews(df, superseded)
+        df = pd.concat([kept, df], ignore_index=True)
     if "File" in df.columns:
         df = df.drop_duplicates(subset=["File"], keep="last")
     sort_cols = [c for c in ("Species (common)", "Occurrence #") if c in df.columns]
     if sort_cols:
-        df = df.sort_values(sort_cols, key=lambda c: c.astype(str))
-    df.to_excel(xlsx_path, index=False)
+        df = df.sort_values(sort_cols, key=lambda c: (pd.to_numeric(c, errors="coerce")
+                                                      if c.name == "Occurrence #" else c.astype(str)))
+    if "Quality rating" in df.columns:   # กันกลายเป็น 3.0 เมื่อมีช่องว่างปน
+        df["Quality rating"] = pd.to_numeric(df["Quality rating"], errors="coerce").astype("Int64")
+    if df.empty and not xlsx_path.exists():
+        return
+    temporary = xlsx_path.with_name(xlsx_path.stem + ".tmp.xlsx")
+    try:
+        df.to_excel(temporary, index=False)
+        os.replace(temporary, xlsx_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    current_files = set(df["File"].astype(str)) if "File" in df else set()
+    current_ready = set(df["Ready file"].dropna().astype(str)) if "Ready file" in df else set()
+    for _, old_row in superseded.iterrows():
+        for column, hash_column, expected_parent, still_used in (
+            ("File", "Generated sha256", xlsx_path.parent, current_files),
+            ("Ready file", "Ready sha256", xlsx_path.parent / "Ready", current_ready),
+        ):
+            relative = old_row.get(column)
+            old_hash = old_row.get(hash_column)
+            if (pd.isna(relative) or pd.isna(old_hash) or not relative or not old_hash or
+                    str(relative) in still_used):
+                continue
+            try:
+                old_path = _safe_generated_path(xlsx_path.parent, str(relative))
+                if not old_path.is_relative_to(expected_parent.resolve()):
+                    continue
+                if old_path.is_file():
+                    if file_sha256(old_path) == str(old_hash):
+                        old_path.unlink()
+                        if column == "File":
+                            old_path.with_suffix(".png").unlink(missing_ok=True)
+                    else:
+                        print(f"  warning: superseded copy was edited; kept {old_path}")
+            except (OSError, ValueError) as exc:
+                print(f"  warning: could not remove superseded copy {relative}: {exc}")
 
 
 def collect_inputs(input_path: Path):
@@ -1084,11 +1269,14 @@ def build_parser():
     p.add_argument("--lon", type=float, default=None, help="longitude (blank = metadata/default)")
     p.add_argument("--coords", default=None,
                    help="single field 'lat,lon' e.g. 13.8119502,100.553166 or a Google Maps link (overrides --lat/--lon)")
-    p.add_argument("--date", default=REC_DATE, help="override date YYYY-MM-DD (blank = filename/metadata/mtime)")
+    p.add_argument("--date", default=REC_DATE, help="recording date YYYY-MM-DD; required when metadata has no date")
+    p.add_argument("--same-date-for-all", action="store_true",
+                   help="confirm that --date applies to every file in a folder")
+    p.add_argument("--start-time", default=None, help="actual recording start time HH:MM or HH:MM:SS")
     p.add_argument("--use-metadata", action=argparse.BooleanOptionalAction, default=USE_METADATA,
                    help="read date/coords from file metadata (ffprobe + BWF bext + XMP)")
     p.add_argument("--use-filetime", action="store_true",
-                   help="force file time (recording start) as the record datetime, skip filename/metadata")
+                   help="use the file timestamp as unverified recording time; a date is still required if metadata has none")
     p.add_argument("--min-conf", type=float, default=MIN_CONF, help="minimum confidence 0-1")
     p.add_argument("--occurrence-gap", type=float, default=OCCURRENCE_GAP_SEC,
                    help="gap <= this (seconds) = same occurrence")
@@ -1109,22 +1297,21 @@ def build_parser():
                    help="also cut sounds BirdNET can't confidently ID into an _Unknown/ folder")
     p.add_argument("--unknown-min-conf", type=float, default=UNKNOWN_MIN_CONF,
                    help="confidence floor for _Unknown (below this = ignored as noise)")
-    p.add_argument("--highpass", type=float, default=HIGHPASS_HZ,
-                   help="high-pass filter cutoff Hz to cut low rumble/wind (0 = off; eBird suggests <=250)")
-    p.add_argument("--xc-key", default=os.environ.get("XC_API_KEY", ""),
-                   help="Xeno-Canto v3 API key (or env XC_API_KEY) — enables downloading reference audio")
-    p.add_argument("--xc-country", default="",
-                   help="filter XC reference audio by country e.g. thailand (blank = worldwide)")
-    p.add_argument("--xc-count", type=int, default=2, help="XC reference recordings to fetch per species")
+    p.add_argument("--keep-continuous", action="store_true",
+                   help="one continuous span from first to last detection per species in each source; use only after confirming the same individual")
     p.add_argument("--force", action="store_true",
                    help="redo even if the file was already processed (normally skipped)")
     return p
 
 
 def main():
+    # GUI หยุดงานด้วย SIGTERM -> ให้เป็น KeyboardInterrupt เพื่อ rollback/ลบ staging ได้เรียบร้อย
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
+
     # โหมดสร้าง spectrogram แยก (subprocess — ไม่โหลด TensorFlow)
     if len(sys.argv) >= 2 and sys.argv[1] == "--gen-spectrograms":
-        gen_spectrograms([Path(d) for d in sys.argv[2:]])
+        if gen_spectrograms([Path(d) for d in sys.argv[2:]]):
+            sys.exit(1)
         return
 
     # โหมดรวมคลิปนกตัวเดียวกัน (ML guide #5): --group w1 w2 ... -o out.wav
@@ -1132,9 +1319,13 @@ def main():
         rest = sys.argv[2:]
         if "-o" in rest:
             i = rest.index("-o")
+            if i + 1 >= len(rest):
+                print("group: must specify an output file after -o")
+                sys.exit(2)
             group_clips(rest[:i], Path(rest[i + 1]))
         else:
             print("group: must specify -o <output file>")
+            sys.exit(2)
         return
 
     args = build_parser().parse_args()
@@ -1143,82 +1334,125 @@ def main():
         if cc:
             args.lat, args.lon = cc
         else:
-            print(f"Warning: could not parse coordinates from '{args.coords}' — using another source")
+            print(f"Invalid coordinates: {args.coords}")
+            sys.exit(2)
+    if ((args.lat is not None and not -90 <= args.lat <= 90) or
+            (args.lon is not None and not -180 <= args.lon <= 180)):
+        print("Coordinates are outside valid latitude/longitude ranges")
+        sys.exit(2)
+    if not 0 <= args.min_conf <= 1 or not 0 <= args.unknown_min_conf <= 1:
+        print("Confidence thresholds must be between 0 and 1")
+        sys.exit(2)
+    if min(args.occurrence_gap, args.lead, args.tail) < 0:
+        print("Occurrence gap, lead, and tail cannot be negative")
+        sys.exit(2)
     input_path = Path(args.audio)
     root_out = Path(args.output)
-    root_out.mkdir(parents=True, exist_ok=True)
-
-    date_override = datetime.strptime(args.date, "%Y-%m-%d") if args.date else None
+    try:
+        if args.date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", args.date):
+            raise ValueError("invalid date format")
+        date_override = datetime.strptime(args.date, "%Y-%m-%d") if args.date else None
+    except ValueError:
+        print("Date must be YYYY-MM-DD")
+        sys.exit(2)
+    try:
+        start_time_override = None
+        if args.start_time:
+            fmt = "%H:%M:%S" if args.start_time.count(":") == 2 else "%H:%M"
+            start_time_override = datetime.strptime(args.start_time, fmt).time()
+    except ValueError:
+        print("Start time must be HH:MM or HH:MM:SS")
+        sys.exit(2)
 
     files = collect_inputs(input_path)
     if not files:
         print(f"No audio file found at: {input_path}")
         sys.exit(1)
+    if len(files) > 1 and date_override and not args.same_date_for_all:
+        print("Date applies to every file in this folder. Verify all recordings share "
+              "the same date and add --same-date-for-all, or process each date separately.")
+        sys.exit(2)
+    try:
+        require_recording_context(files, date_override, args.use_metadata,
+                                  args.lat, args.lon)
+    except ValueError as exc:
+        print(f"Input required before analysis:\n{exc}")
+        sys.exit(2)
+    root_out.mkdir(parents=True, exist_ok=True)
 
     print(f"Processing {len(files)} file(s) | output: {root_out}")
     print("Loading BirdNET model (once) ...")
     from birdnetlib.analyzer import Analyzer  # lazy: โหลด TensorFlow ตรงนี้
     analyzer = Analyzer()
 
-    rows_by_date = defaultdict(list)        # date_folder -> rows (รวมหลายไฟล์วันเดียวกัน)
+    new_clips_by_date = defaultdict(int)    # date_folder -> คลิปใหม่รอบนี้ (รวมหลายไฟล์วันเดียวกัน)
+    skipped_dates = set()                   # date_folder ที่มีไฟล์ถูกข้ามเพราะทำไว้แล้ว
     total_clips = 0
-    for audio_path in files:
-        try:
-            rows, date_folder = process_file(
-                analyzer, audio_path, root_out,
-                lat_arg=args.lat, lon_arg=args.lon, cfg_lat=LAT, cfg_lon=LON,
-                date_override=date_override, use_meta=args.use_metadata,
-                min_conf=args.min_conf, gap=args.occurrence_gap,
-                lead=args.lead, tail=args.tail, target_dbfs=args.target_dbfs,
-                fmt=args.format, make_mono=args.mono, incl_alt=args.alt_species,
-                place_arg=args.place, dt_regex=args.datetime_regex, force=args.force,
-                use_filetime=args.use_filetime,
-                cut_unknown=args.unknown, unknown_floor=args.unknown_min_conf,
-                highpass_hz=args.highpass,
-            )
-        except Exception as exc:  # noqa: BLE001  ไฟล์เดียวพังไม่ควรล้มทั้ง batch
-            print(f"  !! error with {audio_path.name}: {exc}")
-            continue
-        if rows and date_folder is not None:
-            for r in rows:
-                r["Source file"] = audio_path.name
-            rows_by_date[date_folder].extend(rows)
-            total_clips += len(rows)
+    failed_files = []
+    seen_sources = set()
+    try:
+        for audio_path in files:
+            sid = source_id(audio_path)
+            if sid in seen_sources:
+                print(f"  duplicate recording skipped: {audio_path}")
+                continue
+            try:
+                rows, date_folder = process_file(
+                    analyzer, audio_path, root_out,
+                    lat_arg=args.lat, lon_arg=args.lon, cfg_lat=LAT, cfg_lon=LON,
+                    date_override=date_override, use_meta=args.use_metadata,
+                    min_conf=args.min_conf, gap=args.occurrence_gap,
+                    lead=args.lead, tail=args.tail, target_dbfs=args.target_dbfs,
+                    fmt=args.format, make_mono=args.mono, incl_alt=args.alt_species,
+                    place_arg=args.place, dt_regex=args.datetime_regex, force=args.force,
+                    use_filetime=args.use_filetime,
+                    cut_unknown=args.unknown, unknown_floor=args.unknown_min_conf,
+                    keep_continuous=args.keep_continuous,
+                    start_time_override=start_time_override,
+                )
+                if rows is not None:
+                    # เขียน summary ทันทีทีละไฟล์: ถ้าหยุดกลางคัน ไฟล์ที่เสร็จแล้วไม่ต้องวิเคราะห์ใหม่
+                    write_summary(rows, date_folder / "summary.xlsx",
+                                  {str(audio_path.resolve())}, {sid}, keep_reviews=not args.force)
+            except Exception as exc:  # noqa: BLE001  ไฟล์เดียวพังไม่ควรล้มทั้ง batch
+                print(f"  !! error with {audio_path.name}: {exc}")
+                for staging in root_out.glob(f"*/.staging/{sid}"):
+                    shutil.rmtree(staging, ignore_errors=True)
+                failed_files.append(str(audio_path))
+                continue
+            seen_sources.add(sid)
+            if rows is None:
+                skipped_dates.add(date_folder)
+            else:
+                new_clips_by_date[date_folder] += len(rows)
+                total_clips += len(rows)
+    except KeyboardInterrupt:
+        print("\nStopped. Finished files are saved; run again to continue with the rest.")
+        sys.exit(130)
 
-    # เขียน summary.xlsx ต่อโฟลเดอร์วัน
-    for date_folder, rows in rows_by_date.items():
-        write_summary(rows, date_folder / "summary.xlsx")
-        print(f"  summary {len(rows)} clips -> {date_folder / 'summary.xlsx'}")
+    # GUI อ่านบรรทัด "summary ... -> path" เพื่อเปิดแท็บตรวจคลิป
+    for date_folder in sorted(set(new_clips_by_date) | skipped_dates, key=str):
+        summary = date_folder / "summary.xlsx"
+        if not summary.exists():
+            continue
+        if date_folder in new_clips_by_date:
+            print(f"  summary {new_clips_by_date[date_folder]} new clips -> {summary}")
+        else:
+            print(f"  summary already up to date -> {summary}")
 
     # สร้าง spectrogram ใน process แยก (กัน TensorFlow ชน native crash)
-    if args.spectrogram and rows_by_date:
+    if args.spectrogram and total_clips:
         print("\nGenerating mel-spectrograms in a separate process ...")
-        run_spectrogram_subprocess(sorted(rows_by_date.keys(), key=str))
+        dates_with_clips = [d for d, count in new_clips_by_date.items() if count]
+        if run_spectrogram_subprocess(sorted(dates_with_clips, key=str)) != 0:
+            print("  !! spectrogram generation failed")
+            failed_files.append("spectrogram generation")
 
-    # ดึงเสียงอ้างอิง Xeno-Canto ต่อชนิด (ถ้าให้ key) -> _reference/<ชนิด>/ ไว้ฟังเทียบ
-    if args.xc_key:
-        print("\nDownloading Xeno-Canto reference audio ...")
-        ref_root = root_out / "_reference"
-        seen = set()
-        for rows in rows_by_date.values():
-            for r in rows:
-                sci = str(r.get("Species (scientific)") or "").split()
-                if len(sci) < 2:
-                    continue
-                key = f"{sci[0]} {sci[1]}"          # dedup ต่อ "ชนิด" ไม่ใช่ต่อแถว
-                if key in seen:
-                    continue
-                seen.add(key)
-                # แถว _Unknown ใช้ชื่อชนิดที่เดา (Alt species 1) เป็นชื่อโฟลเดอร์
-                label = r.get("Species (common)")
-                if not label or label == "_Unknown":
-                    label = r.get("Alt species 1") or key
-                got = xc_download_refs(sci[0], sci[1], label, args.xc_key,
-                                       args.xc_country, args.xc_count, ref_root)
-                print(f"  XC {label}: {got} file(s)")
-        if seen:
-            print(f"  reference audio -> {ref_root}")
-
+    if failed_files:
+        print(f"\nIncomplete: {len(failed_files)} failure(s), {total_clips} clips -> {root_out}")
+        for failed in failed_files:
+            print(f"  failed: {failed}")
+        sys.exit(1)
     print(f"\nDone: {total_clips} clips from {len(files)} file(s) -> {root_out}")
 
 

@@ -1,0 +1,106 @@
+============================================================
+  BirdNET -> eBird clipper (macOS)     อ่านก่อนใช้ / READ ME FIRST
+============================================================
+รายละเอียดทั้งระบบ / Full documentation: README.md
+
+------------------------------------------------------------
+ภาษาไทย
+------------------------------------------------------------
+เครื่องที่ใช้ได้
+  - Mac ชิป Apple Silicon (M1 ขึ้นไป) และ macOS Sequoia 15.2 ขึ้นไป
+  - ไม่ต้องติดตั้งอะไรเพิ่ม (มี Python, ffmpeg/ffprobe ในโฟลเดอร์แล้ว)
+  - มีโมเดล BirdNET 3.0 ใน data/birdnet แล้ว วิเคราะห์ได้โดยไม่ต้องต่อเน็ต
+
+เปิดโปรแกรม
+  - ดับเบิลคลิก BirdNET eBird.app บน Desktop (ใช้โฟลเดอร์
+    Projects/Sound Recording/Programs/BirdNET-eBird-mac อย่าย้ายโฟลเดอร์นี้)
+  - หรือดับเบิลคลิก BirdNET-eBird.command ในโฟลเดอร์โปรแกรม
+  - ครั้งแรกบนเครื่องใหม่ ถ้า macOS บอกว่าเปิดไม่ได้: System Settings > Privacy & Security
+    > Open Anyway  หรือใน Terminal:  xattr -dr com.apple.quarantine /path/to/BirdNET-eBird-mac
+  - ส่งให้เพื่อน: รัน tools/make_share_zip.sh ได้ zip บน Desktop (ไม่มี API key ของคุณ)
+    ถ้าคัดลอกเอง ห้ามใส่ data/settings.json (มี API key) และอย่าส่งเฉพาะ BirdNET eBird.app
+
+ใช้งาน
+  1. กด Choose audio file หรือ Choose audio folder (แถบบนสุด)
+  2. หน้าต่าง Recording details แสดงวันเวลา/พิกัดที่อ่านได้ กรอกเฉพาะที่ขาด
+     วันที่ 20261006, เวลา 0929, พิกัด 30.5165,114.4453 หรือวางลิงก์ Google Maps
+     ติ๊ก Site habitat ถ้าต้องการ (เช่น Forest หรือ Forest + Marsh) แล้วกด Start analysis
+  3. เสร็จแล้วแอปเปิดแท็บ Review clips ให้ ผลเก่าทุกชุดอยู่ในเมนู Results
+     (เปิดแอปครั้งหน้าจะกลับมาที่ชุดล่าสุดเอง ไม่ต้องวิเคราะห์ใหม่)
+  4. เลือกคลิป ฟัง (คลิกภาพหรือ ▶ Play) ดูกรอบใน spectrogram
+     แถบขาว = ช่วงที่ BirdNET เจอ, กรอบฟ้า = เสียงที่ดังเด่น (อาจเป็นชนิดอื่น)
+  5. ตัวช่วย: Reference sounds…, Second opinion (ต้องมี xeno-canto API key),
+     บรรทัด eBird (ต้องมี eBird API key), Look up species: eBird / Photos / Sounds / xeno-canto
+     ใส่ key ของตัวเองในแท็บ Settings แล้วกด Save key
+  6. แก้ชื่อชนิดถ้าผิด ให้ Audio quality 1-5 แล้วกด ✓ Approve -> Ready หรือ Reject
+     อัปโหลดไฟล์ใน Ready/ ขึ้น eBird / Macaulay Library
+
+ควรรู้
+  - ทุกผลจาก AI ต้องฟังยืนยันก่อน Approve ค่าความมั่นใจไม่ใช่คะแนนคุณภาพเสียง
+  - แอปตัดชนิดที่ไม่ควรพบในพื้นที่/ฤดูนั้นทิ้งเอง ถ้าติ๊ก Site habitat นกน้ำในจุดที่ไม่มีน้ำ
+    ต้องคะแนน >= 0.8 จึงจะแสดง (พร้อมคำเตือน)
+  - แถบล่าง: งานที่รันอยู่, ■ Stop (ไฟล์ที่เสร็จแล้วยังอยู่), Jobs… (คิวงาน),
+    Show details (log)  ปิดโปรแกรมระหว่างวิเคราะห์ได้ รันใหม่จะทำต่อ
+  - เวลา UTC ในไฟล์ (เช่น m4a จากมือถือ) แปลงตาม time zone ของ Mac ตั้งให้ตรงกับจุดที่บันทึก
+  - force redo = วิเคราะห์ใหม่และล้างผลตรวจกลับเป็น Pending
+  - ข้อมูลของแอปทั้งหมด (settings/API key, โมเดล, cache) อยู่ในโฟลเดอร์ data/
+
+------------------------------------------------------------
+English
+------------------------------------------------------------
+Requirements
+  - Apple Silicon Mac (M1 or later), macOS Sequoia 15.2 or later
+  - Nothing to install: Python and ffmpeg/ffprobe are included
+  - The BirdNET 3.0 model is included in data/birdnet; analysis works offline
+
+Opening the app
+  - Double-click BirdNET eBird.app on the Desktop (it uses the folder
+    Projects/Sound Recording/Programs/BirdNET-eBird-mac; keep it in place)
+  - Or double-click BirdNET-eBird.command in the program folder
+  - First run on a new Mac, if macOS blocks it: System Settings > Privacy & Security
+    > Open Anyway, or in Terminal:  xattr -dr com.apple.quarantine /path/to/BirdNET-eBird-mac
+  - To share: run tools/make_share_zip.sh; it makes a zip on the Desktop without your API keys.
+    If copying by hand, never include data/settings.json (your API keys)
+
+Using it
+  1. Click Choose audio file or Choose audio folder (top bar)
+  2. Recording details shows the detected date/time/location; enter only what is missing
+     (date 20261006, time 0929, coordinates or a Google Maps link), optionally tick the
+     Site habitat (e.g. Forest, or Forest + Marsh), then click Start analysis
+  3. When done, the Review clips tab opens; every earlier result is in the Results menu
+     (the app reopens the last result next time; no need to analyze again)
+  4. Select a clip, listen (click the image or ▶ Play), check the spectrogram
+     (white bar = where BirdNET detected it; cyan boxes = loud sounds, maybe other species)
+  5. Helpers: Reference sounds… and Second opinion (xeno-canto API key), the eBird line
+     (eBird API key), Look up species: eBird / Photos / Sounds / xeno-canto.
+     Paste your own keys in the Settings tab and click Save key
+  6. Correct the species, give an Audio quality 1-5, then ✓ Approve -> Ready or Reject.
+     Upload the files in Ready/ to eBird / Macaulay Library
+
+Good to know
+  - Verify every AI result by ear; confidence is not an audio-quality rating
+  - Species not expected at the place and season are dropped. With a Site habitat,
+    water birds at a dry site appear only at >= 0.8, with a warning
+  - Bottom bar: running job, ■ Stop (finished files are kept), Jobs… (queue),
+    Show details (log). Closing during analysis is safe; the next run continues
+  - UTC times in files (e.g. phone m4a) use the Mac's time zone; set it to where you recorded
+  - force redo = analyze again and reset reviews to Pending
+  - All app data (settings/API keys, models, caches) is in the data/ folder
+
+------------------------------------------------------------
+Please upload to eBird / Macaulay Library
+------------------------------------------------------------
+It powers global citizen science and helps train Merlin Bird ID to be
+more accurate, especially for under-sampled regions like Southeast Asia.
+
+------------------------------------------------------------
+Thanks / ขอบคุณ
+------------------------------------------------------------
+ - Biopikat (developer / page: Biopikat)
+ - Tripitcha Wanwimolruk
+ - Wichyanan Limparungpatthanakij
+ - Utain Pummarin
+ - Chutinton Viriyapanon
+ - The eBird reviewers of Thailand
+ - Cornell Lab of Ornithology (BirdNET, Merlin Bird ID, eBird / Macaulay Library)
+ - Anthropic (Claude — helped develop and write this tool)

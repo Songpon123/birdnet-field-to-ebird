@@ -71,6 +71,7 @@ Copy-Item -Force (Join-Path $here "app\*.py")                 $app
 Copy-Item -Force (Join-Path $here "app\tflite_runtime\*.py") (Join-Path $app "tflite_runtime")
 New-Item -ItemType Directory -Force -Path (Join-Path $app "assets") | Out-Null
 Copy-Item -Force (Join-Path $here "app\assets\app_icon.png") (Join-Path $app "assets")
+Copy-Item -Force (Join-Path $here "app\assets\avonet_habitat.csv") (Join-Path $app "assets")
 
 # 6) copy ffmpeg + ffprobe (resolve the winget shim to the real file)
 $ff = Get-Command ffmpeg -ErrorAction SilentlyContinue

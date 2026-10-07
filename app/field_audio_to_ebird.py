@@ -6,7 +6,8 @@ field_audio_to_ebird.py
 ตามแนวทางคู่มือ "Audio Editing in Audacity for eBird" (Cornell Lab / Macaulay Library)
 
 ลำดับงาน:
-  1) ระบุชนิดนกด้วย BirdNET (กรองตามพิกัด + วันที่ ลด false positive)
+  1) เสนอชนิดนกด้วย BirdNET 3.0 preview เป็นค่าเริ่มต้น; ผู้ใช้ฟังตรวจทุกชนิด
+     ทั้งสองรุ่นใช้ตัวกรองพิกัด + วันที่ และเลือก BirdNET 2.4 เพื่อเทียบผลได้
   2) แบ่ง detection ของแต่ละชนิดเป็น "occurrence" (การพบแต่ละครั้ง):
        detection ที่ห่างกัน <= OCCURRENCE_GAP_SEC = ครั้งเดียวกัน, เกินกว่านั้น = คนละครั้ง
      แต่ละ occurrence ตัดเป็น "ช่วงต่อเนื่องช่วงเดียว" จากไฟล์ต้นฉบับ
@@ -24,7 +25,8 @@ field_audio_to_ebird.py
   - เสียงประกาศ (voice notes) คู่มือใช้ -10 dB แต่ตรวจอัตโนมัติยาก จึง normalize -3 ทั้งหมด
   - โมเดล BirdNET เป็น CC BY-NC-SA 4.0 (ใช้เพื่อการศึกษา/วิจัย = non-commercial)
 
-ติดตั้ง: pip install birdnetlib pydub pandas openpyxl librosa matplotlib soundfile numpy ; ต้องมี ffmpeg
+ติดตั้ง: pip install birdnet birdnetlib onnxruntime pydub pandas openpyxl librosa
+         matplotlib soundfile numpy ; ต้องมี ffmpeg (แพ็กเกจที่เหลือตาม dependencies)
 """
 
 import argparse
@@ -50,7 +52,11 @@ import numpy as np
 from pydub import AudioSegment
 import pandas as pd
 
+import paths  # ตั้ง BIRDNET_APP_DATA -> data/birdnet ก่อนโหลด BirdNET 3.0
+from entry_formats import DATE_HINT, TIME_HINT, parse_date_entry, parse_time_entry
 from review_store import REVIEW_COLUMNS
+from habitat import (MISMATCH_MIN_CONF as HABITAT_MISMATCH_MIN_CONF, SITE_HABITATS,
+                     fits_site, parse_site_habitats, species_habitat)
 
 # birdnetlib (ดึง TensorFlow มาด้วย) import แบบ lazy ใน main()/process_file()
 # เพื่อให้โหมด --gen-spectrograms รันเป็น subprocess "ที่ไม่มี TensorFlow" ได้
@@ -60,8 +66,13 @@ from review_store import REVIEW_COLUMNS
 AUDIO_FILE       = ""
 OUTPUT_DIR       = str(Path.home() / "BirdNET_eBird")     # โฟลเดอร์ผลลัพธ์
 LAT, LON         = None, None                     # never silently invent a recording location
-REC_DATE         = None                           # YYYY-MM-DD override วันกรอง (None = เดาจากชื่อ/metadata/mtime)
-MIN_CONF         = 0.5                            # ความมั่นใจขั้นต่ำ 0-1
+REC_DATE         = None                           # YYYYMMDD override วันกรอง (None = เดาจากชื่อ/metadata/mtime)
+MIN_CONF         = 0.5                            # V3 preview: เก็บตัวเลือกให้คนตรวจ; ไม่ใช่การยืนยัน
+V2_MIN_CONF      = 0.25                           # V2.4: ค่าที่ใช้กู้เสียงเบาที่เกณฑ์เดิม 0.5 พลาด
+DEFAULT_MODEL    = "3.0-preview"                  # recall ดีกว่า V2.4 ในไฟล์เปรียบเทียบ; ผลยังต้องตรวจด้วยคน
+OVERLAP_SEC      = 1.5                            # เลื่อนหน้าต่าง 3 วินาทีทีละครึ่งช่วง
+OUT_OF_RANGE_MIN_CONF = None                      # None = ตัดชนิดนอกพื้นที่/ฤดู และชนิดที่ตรวจพื้นที่ไม่ได้ทิ้ง
+                                                  # (ตั้งค่า เช่น 0.7 = เก็บไว้ตรวจนกหลงถิ่นด้วยหู)
 USE_METADATA     = True                           # อ่านวัน/พิกัดจาก metadata ไฟล์ (ffprobe + BWF bext + XMP)
 
 OCCURRENCE_GAP_SEC = 5.0                          # ห่างกัน <= ค่านี้ = ครั้งเดียวกัน, เกิน = คนละครั้ง=คนละไฟล์
@@ -72,7 +83,7 @@ MAKE_MONO        = True                           # stereo -> mono
 EXPORT_SPECTROGRAM = False                        # สร้าง mel-spectrogram .png ต่อคลิป
 INCLUDE_ALT_SPECIES = True                        # ใส่ชนิดสำรองอันดับ 2-3 ใน summary
 CUT_UNKNOWN      = False                          # ตัดเสียงที่ BirdNET มั่นใจไม่พอ ไปเก็บ _Unknown/
-UNKNOWN_MIN_CONF = 0.25                           # floor: conf อยู่ [floor, min_conf) = unknown (ต่ำกว่า floor = ทิ้ง=noise)
+UNKNOWN_MIN_CONF = 0.1                            # floor: conf อยู่ [floor, min_conf) = unknown (ต่ำกว่า floor = ทิ้ง=noise)
 
 # regex พาร์สวันเวลาเริ่มอัดจากชื่อไฟล์ (group: ปี เดือน วัน [ชม.] [นาที] [วินาที])
 # รองรับ separator หลายแบบ: '25681111 1336', '2026-05-22 08_41', '20260608', 'YYYYMMDDHHMMSS'
@@ -171,6 +182,16 @@ def filename_datetime(name: str, regex: str):
     return _dt_from_text(name, regex)
 
 
+def filename_has_time(name: str, regex: str) -> bool:
+    """Whether the filename contains an hour and minute, not just a date."""
+    return any(len(m.groups()) >= 5 and m.group(4) and m.group(5)
+               for m in re.finditer(regex, name))
+
+
+def _metadata_has_time(value: str) -> bool:
+    return bool(re.search(r"(?:T|\s)\d{1,2}:\d{2}|\d{8}T\d{4}", str(value)))
+
+
 def _parse_meta_datetime(s: str):
     """เวลาที่ไม่มี timezone = เวลาท้องถิ่นของเครื่องอัด; เวลาที่มี timezone (เช่น MP4/M4A
     creation_time ...Z = UTC) แปลงเป็นเวลาของเครื่องนี้ ไม่งั้นในไทยจะคลาด 7 ชม."""
@@ -229,6 +250,7 @@ def _read_wav_meta(path: Path, meta: dict):
                     dt = _parse_meta_datetime(f"{d} {t}".strip())
                     if dt:
                         meta["datetime"] = dt
+                        meta["datetime_has_time"] = bool(t)
                 elif cid in (b"_PMX", b"iXML"):
                     txt = data.decode("utf-8", "replace")
                     if meta.get("datetime") is None:
@@ -236,7 +258,9 @@ def _read_wav_meta(path: Path, meta: dict):
                         mm = re.search(r"(?:xmp:CreateDate|exif:DateTimeOriginal|BWFOriginationDate)"
                                        r"""(?:>|=\s*["'])\s*([0-9:\-T ]{8,25})""", txt)
                         if mm:
-                            meta["datetime"] = _parse_meta_datetime(mm.group(1))
+                            value = mm.group(1)
+                            meta["datetime"] = _parse_meta_datetime(value)
+                            meta["datetime_has_time"] = _metadata_has_time(value)
                     if meta.get("lat") is None:
                         mlat = re.search(r"""exif:GPSLatitude(?:>|=\s*["'])([^<"']+)""", txt)
                         mlon = re.search(r"""exif:GPSLongitude(?:>|=\s*["'])([^<"']+)""", txt)
@@ -289,7 +313,8 @@ def parse_coords(text):
 
 def read_audio_metadata(path: Path) -> dict:
     """ดึง datetime / lat / lon / place จาก metadata ไฟล์ (ffprobe + BWF/XMP) — คืน dict ที่ไม่มี = None"""
-    meta = {"datetime": None, "lat": None, "lon": None, "place": None}
+    meta = {"datetime": None, "datetime_has_time": False,
+            "lat": None, "lon": None, "place": None}
     # ffprobe tags (ครอบคลุม mp4/m4a/flac/ogg/mp3 และ wav บางส่วน)
     ffprobe = getattr(AudioSegment, "ffprobe", None)
     if ffprobe and Path(ffprobe).is_file():
@@ -312,6 +337,7 @@ def read_audio_metadata(path: Path) -> dict:
                 if k in tags:
                     meta["datetime"] = _parse_meta_datetime(tags[k])
                     if meta["datetime"]:
+                        meta["datetime_has_time"] = _metadata_has_time(tags[k])
                         break
             for k in ("com.apple.quicktime.location.iso6709", "location",
                       "location-eng", "ixml_location"):
@@ -330,6 +356,66 @@ def read_audio_metadata(path: Path) -> dict:
     if path.suffix.lower() == ".wav":
         _read_wav_meta(path, meta)
     return meta
+
+
+def recording_context_preview(path: Path, use_meta=True, dt_regex=FILENAME_DATETIME_REGEX):
+    """What date/time and location will be used before manual overrides."""
+    meta = read_audio_metadata(path) if use_meta else {}
+    embedded_dt = meta.get("datetime")
+    filename_dt = filename_datetime(path.name, dt_regex)
+    filename_time = filename_has_time(path.name, dt_regex)
+    if embedded_dt:
+        dt = embedded_dt
+        source = "embedded metadata"
+        has_time = meta.get("datetime_has_time", True)
+        if not has_time and filename_dt and filename_time and filename_dt.date() == dt.date():
+            dt = filename_dt
+            source = "metadata date + filename time"
+            has_time = True
+    else:
+        dt = filename_dt
+        source = "filename" if dt else None
+        has_time = filename_time if dt else False
+    if not has_time:
+        started = consistent_file_start(path)
+        if started and (dt is None or started.date() == dt.date()):
+            dt, has_time = started, True
+            source = f"{source} date + file times" if source else "file times (created + length = modified)"
+    return {"datetime": dt, "datetime_source": source, "has_time": has_time,
+            "lat": meta.get("lat"), "lon": meta.get("lon"), "place": meta.get("place"),
+            "metadata": meta}
+
+
+def consistent_file_start(path: Path):
+    """เวลาเริ่มบันทึกจากระบบไฟล์ เฉพาะเมื่อ 'เวลาสร้าง + ความยาวเสียง ≈ เวลาแก้ไขล่าสุด'
+    (เครื่องอัดสร้างไฟล์ตอนเริ่ม ปิดไฟล์ตอนจบ) ไฟล์ที่ถูกคัดลอกจนเวลาเปลี่ยนหรือถูกแก้ทีหลังจะไม่ผ่าน"""
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    created = getattr(stat, "st_birthtime", None)
+    if created is None:
+        return None
+    duration = _audio_duration(path)
+    if duration < 30:
+        return None
+    tolerance = max(5.0, min(120.0, duration * 0.02))
+    if abs(created + duration - stat.st_mtime) > tolerance:
+        return None
+    return datetime.fromtimestamp(created).replace(microsecond=0)
+
+
+def effective_overrides(context, date_override, lat, lon, start_time_override,
+                        fill_missing=False):
+    """Keep file metadata when GUI supplies fallback details for a mixed folder."""
+    if not fill_missing:
+        return date_override, lat, lon, start_time_override
+    return (
+        date_override if context["datetime"] is None else None,
+        lat if context["lat"] is None else None,
+        lon if context["lon"] is None else None,
+        start_time_override if not context["has_time"] else None,
+    )
 
 
 def merge_occurrences(items, gap_sec):
@@ -485,7 +571,90 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def save_mel_spectrogram(seg: AudioSegment, png_path: Path, title: str) -> bool:
+def detection_boxes(items, occurrence, clip_start_s, clip: AudioSegment):
+    """สิ่งที่วาดบน spectrogram ของคลิป (วินาทีนับจากต้นคลิป):
+      windows = ช่วงที่ BirdNET เจอชนิดนี้ [[t0, t1, max_conf], ...] (หน้าต่าง 3 วิที่ซ้อนกันรวมเป็นช่วงเดียว)
+      sounds  = เสียงที่ดังเกินพื้นหลังชัดเจนภายในช่วงนั้น [[t0, t1, f_low, f_high], ...]
+    BirdNET ไม่บอกว่าเสียงอยู่ตรงไหนในหน้าต่าง/ความถี่ใด กรอบ sounds จึงเป็นค่าประมาณ
+    และอาจรวมเสียงชนิดอื่นที่ดังในช่วงเดียวกัน"""
+    windows = []
+    for s, e, c in sorted(items):
+        if s < occurrence["start"] - 1e-6 or e > occurrence["end"] + 1e-6:
+            continue
+        if windows and s <= windows[-1][1]:
+            windows[-1][1], windows[-1][2] = max(windows[-1][1], e), max(windows[-1][2], c)
+        else:
+            windows.append([s, e, c])
+    length = len(clip) / 1000.0
+    windows = [[round(max(0.0, s - clip_start_s), 2), round(min(length, e - clip_start_s), 2), round(c, 3)]
+               for s, e, c in windows]
+    sounds = []
+    for t0, t1, _conf in windows:
+        pad = 3.0                         # วิเคราะห์เฉพาะรอบ ๆ ช่วง (คลิปต่อเนื่องอาจยาวหลายนาที)
+        part_start = max(0.0, t0 - pad)
+        part = clip[int(part_start * 1000):int((t1 + pad) * 1000)]
+        sounds += [[round(a + part_start, 2), round(b + part_start, 2), lo, hi]
+                   for a, b, lo, hi in _sound_events(part, t0 - part_start, t1 - part_start,
+                                                     max_boxes=12 + int(t1 - t0))]
+    return {"windows": windows, "sounds": sounds}
+
+
+def _sound_events(seg: AudioSegment, t_from, t_to, fmin=150.0, fmax=12000.0,
+                  excess_db=12.0, max_boxes=12):
+    """จุดใน spectrogram ที่ดังกว่าพื้นหลัง (median) ของความถี่นั้นเกิน excess_db -> กรอบ [t0, t1, f_low, f_high]"""
+    from scipy import ndimage, signal
+    samples = np.array(seg.get_array_of_samples()).astype(np.float32)
+    if seg.channels == 2:
+        samples = samples.reshape(-1, 2).mean(axis=1)
+    sr = seg.frame_rate
+    n_fft = 1024 if sr <= 32000 else 2048
+    if samples.size < n_fft * 4:
+        return []
+    freqs, times, z = signal.stft(samples, fs=sr, nperseg=n_fft, noverlap=n_fft * 3 // 4,
+                                  boundary=None, padded=False)
+    # เฉลี่ยจุดข้างเคียงก่อน กันเม็ดสุ่มของเสียงรบกวนเกินเกณฑ์
+    power = 10 * np.log10(ndimage.uniform_filter(np.abs(z) ** 2, size=(3, 3)) + 1e-12)
+    floor = np.median(power, axis=1, keepdims=True)                 # พื้นหลังของแต่ละความถี่
+    band = (freqs >= fmin) & (freqs <= min(fmax, sr / 2))
+    inside = (times >= t_from) & (times <= t_to)
+    mask = (power - floor > excess_db) & band[:, None] & inside[None, :]
+    mask = ndimage.binary_closing(mask, structure=np.ones((3, 5)))   # ต่อชิ้นส่วนของโน้ตเดียวกัน
+    mask = ndimage.binary_opening(mask, structure=np.ones((2, 3)))   # ตัดจุดรบกวนเล็ก ๆ
+    labels, _count = ndimage.label(mask)
+    found = []
+    for index, region in enumerate(ndimage.find_objects(labels), start=1):
+        rows, cols = region
+        t0, t1 = float(times[cols.start]), float(times[cols.stop - 1])
+        if t1 - t0 < 0.03 or (labels[region] == index).sum() < 20:
+            continue
+        strength = float((power[region] - floor[rows])[labels[region] == index].max())
+        found.append([strength, t0, t1, float(freqs[rows.start]), float(freqs[rows.stop - 1])])
+    strongest = sorted(_merge_touching(found), key=lambda item: -item[0])[:max_boxes]
+    return sorted([t0, t1, round(low), round(high)] for _strength, t0, t1, low, high in strongest)
+
+
+def _merge_touching(found, gap_s=0.03, freq_slack=0.1):
+    """รวมชิ้นส่วนของโน้ตเดียวกัน (ซ้อนกันทั้งเวลาและความถี่) เป็นกรอบเดียว: [strength, t0, t1, low, high]"""
+    boxes = [list(item) for item in found]
+    merged = True
+    while merged:
+        merged = False
+        kept = []
+        for box in sorted(boxes, key=lambda item: item[1]):
+            for other in kept:
+                if (box[1] <= other[2] + gap_s and other[1] <= box[2] + gap_s and
+                        box[3] <= other[4] * (1 + freq_slack) and other[3] <= box[4] * (1 + freq_slack)):
+                    other[:] = [max(other[0], box[0]), min(other[1], box[1]), max(other[2], box[2]),
+                                min(other[3], box[3]), max(other[4], box[4])]
+                    merged = True
+                    break
+            else:
+                kept.append(box)
+        boxes = kept
+    return boxes
+
+
+def save_mel_spectrogram(seg: AudioSegment, png_path: Path, title: str, boxes=None) -> bool:
     """mel-spectrogram .png (เรียกเฉพาะใน subprocess ที่ไม่มี TensorFlow)"""
     try:
         import librosa
@@ -513,12 +682,59 @@ def save_mel_spectrogram(seg: AudioSegment, png_path: Path, title: str) -> bool:
     img = librosa.display.specshow(
         S_db, sr=sr, x_axis="time", y_axis="mel", fmax=fmax, ax=ax, cmap="magma"
     )
+    # แถบบน = ช่วงที่ BirdNET เจอชนิดนี้, กรอบฟ้า = เสียงที่ดังเด่นในช่วงนั้น
+    # (แกนเป็นวินาที/Hz จึงวาดด้วยค่าจริงได้แม้แกนตั้งเป็น mel)
+    if boxes:
+        from matplotlib.patches import Rectangle
+        bar_low = fmax * 0.86
+        for t0, t1, conf in boxes.get("windows", ()):
+            ax.add_patch(Rectangle((t0, bar_low), t1 - t0, fmax - bar_low, color="white",
+                                   alpha=0.35, linewidth=0))
+            ax.text(t0, bar_low, f" BirdNET {conf:.2f}", color="white", fontsize=8,
+                    va="bottom", ha="left", clip_on=True)
+        for t0, t1, low, high in boxes.get("sounds", ()):
+            low, high = low * 0.9, min(bar_low, high * 1.1)
+            ax.add_patch(Rectangle((t0, low), max(t1 - t0, 0.02), high - low, fill=False,
+                                   edgecolor="#00e5ff", linewidth=1.4))
+        if boxes.get("sounds"):
+            # BirdNET ตัดสินทั้งหน้าต่าง 3 วิ ไม่บอกว่าเสียงไหนเป็นของชนิดนี้ (ทดลองลบเสียงทีละกลุ่มแล้วแยกไม่ได้)
+            ax.text(0.005, 0.015, "cyan = loud sounds in the BirdNET span; may be other birds or insects",
+                    transform=ax.transAxes, color="#00e5ff", fontsize=7, va="bottom", ha="left",
+                    bbox={"facecolor": "black", "alpha": 0.6, "pad": 2, "linewidth": 0})
     ax.set_title(title, fontsize=9)
     fig.colorbar(img, ax=ax, format="%+2.0f dB")
     fig.tight_layout()
-    fig.savefig(png_path, dpi=110)
+    # เก็บกรอบไว้ในไฟล์ภาพ: ถ้าไม่ตรงกับคลิปปัจจุบัน gen_spectrograms จะสร้างใหม่
+    fig.savefig(png_path, dpi=110, metadata={"Description": _boxes_tag(boxes)})
     plt.close(fig)
     return True
+
+
+SPECTROGRAM_STYLE = 3    # เพิ่มเมื่อเปลี่ยนวิธีวาด -> ภาพเก่าถูกสร้างใหม่
+
+
+def _boxes_tag(boxes) -> str:
+    return f"boxes v{SPECTROGRAM_STYLE} " + json.dumps(boxes, sort_keys=True, separators=(",", ":"))
+
+
+def _png_description(png: Path) -> str:
+    try:
+        from PIL import Image
+        with Image.open(png) as image:
+            return str(image.text.get("Description", ""))
+    except Exception:  # noqa: BLE001  ภาพเสีย/อ่านไม่ได้ = สร้างใหม่
+        return ""
+
+
+def _row_boxes(row):
+    """'Detection boxes' จาก summary -> dict (None ถ้าไม่มีข้อมูล เช่น summary รุ่นเก่า)"""
+    value = None if row is None else row.get("Detection boxes")
+    if value is None or (isinstance(value, float) and pd.isna(value)) or not str(value).strip():
+        return None
+    try:
+        return json.loads(value)
+    except ValueError:
+        return None
 
 
 # ----------------------------- spectrogram subprocess mode -----------------------------
@@ -580,13 +796,14 @@ def gen_spectrograms(dirs):
                          if "Ready" not in wav.relative_to(d).parts]
         for wav in sorted(set(wav_paths)):
             png = wav.with_suffix(".png")
-            if png.exists():
+            boxes = _row_boxes(meta.get(wav))
+            if png.exists() and (boxes is None or _png_description(png) == _boxes_tag(boxes)):
                 skipped += 1
                 continue
             title = _spectrogram_title(meta.get(wav), wav)
             try:
                 seg = AudioSegment.from_file(str(wav))
-                if save_mel_spectrogram(seg, png, title):
+                if save_mel_spectrogram(seg, png, title, boxes):
                     made += 1
                     print(f"  spec -> {wav.name}")
                 else:
@@ -740,25 +957,41 @@ def _export_clip(clip: AudioSegment, out_path: Path, fmt: str, subtype):
         temporary.unlink(missing_ok=True)
 
 
-def _already_processed(date_folder: Path, sid: str) -> bool:
-    """Skip only when this exact source version and all its clips are present."""
+def _already_processed(date_folder: Path, sid: str, settings: str) -> bool:
+    """Skip only when this source, analysis settings, and generated clips match."""
     summ = date_folder / "summary.xlsx"
     if not summ.exists():
         return False
     try:
         df = pd.read_excel(summ, dtype={"Source ID": str})
-        if not {"Source ID", "File", "Generated sha256"}.issubset(df.columns):
+        if not {"Source ID", "File", "Generated sha256", "Analysis settings"}.issubset(df.columns):
             return False
         matching = df[df["Source ID"].astype(str) == sid]
+        if matching.empty or not matching["Analysis settings"].eq(settings).all():
+            return False
 
         def intact(row):
             clip = date_folder / str(row["File"])
             if clip.is_file():
                 return file_sha256(clip) == str(row["Generated sha256"])
             return row.get("Review status") == "Rejected"   # ผู้ตรวจลบคลิปที่ไม่ใช้ทิ้งเอง
-        return not matching.empty and all(intact(row) for _, row in matching.iterrows())
+        return all(intact(row) for _, row in matching.iterrows())
     except Exception:  # noqa: BLE001
         return False
+
+
+def _approved_under_other_settings(date_folder: Path, sid: str, settings: str) -> bool:
+    """Do not silently replace a reviewed result when analysis defaults change."""
+    summary = date_folder / "summary.xlsx"
+    if not summary.exists():
+        return False
+    df = pd.read_excel(summary, dtype={"Source ID": str})
+    if not {"Source ID", "Review status"}.issubset(df.columns):
+        return False
+    matching = df[df["Source ID"].astype(str) == sid]
+    if matching.empty or not matching["Review status"].eq("Approved").any():
+        return False
+    return "Analysis settings" not in matching.columns or not matching["Analysis settings"].eq(settings).all()
 
 
 def _previous_hashes(date_folder: Path, sid: str) -> dict:
@@ -827,16 +1060,16 @@ def require_recording_context(files, date_override, use_meta, lat_arg, lon_arg):
         return
     missing_dates, missing_coords = [], []
     for path in files:
-        meta = read_audio_metadata(path) if use_meta else {}
-        if not date_override and meta.get("datetime") is None:
+        context = recording_context_preview(path, use_meta)
+        if not date_override and context["datetime"] is None:
             missing_dates.append(str(path))
-        if ((lat_arg is None and meta.get("lat") is None) or
-                (lon_arg is None and meta.get("lon") is None)):
+        if ((lat_arg is None and context["lat"] is None) or
+                (lon_arg is None and context["lon"] is None)):
             missing_coords.append(str(path))
     messages = []
     if missing_dates:
-        messages.append("Recording date missing from audio metadata. Enter the date "
-                        "in the Date field (YYYY-MM-DD), or use --date YYYY-MM-DD:\n" +
+        messages.append("Recording date missing from audio metadata and filename. Enter the date "
+                        "in the Date field (YYYYMMDD), or use --date YYYYMMDD:\n" +
                         "\n".join(f"  - {name}" for name in missing_dates))
     if missing_coords:
         messages.append("Recording location missing from audio metadata. Enter "
@@ -848,17 +1081,18 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
                  cfg_lat, cfg_lon, date_override, use_meta, min_conf, gap, lead, tail,
                  target_dbfs, fmt, make_mono, incl_alt, place_arg, dt_regex, force=False,
                  use_filetime=False, cut_unknown=False, unknown_floor=UNKNOWN_MIN_CONF,
-                 keep_continuous=False, start_time_override=None):
+                 keep_continuous=False, start_time_override=None,
+                 overlap=OVERLAP_SEC, out_of_range_min_conf=OUT_OF_RANGE_MIN_CONF,
+                 site_habitats=()):
     """
     วิเคราะห์ + ตัดคลิป 1 ไฟล์ คืน (rows, date_folder); rows = None เมื่อข้ามเพราะเคยทำแล้ว
     วัน/พิกัด/สถานที่: argument > metadata ไฟล์ > ชื่อไฟล์ > เวลาไฟล์ > default
     spectrogram สร้างทีหลังใน subprocess แยก (กัน native crash)
     """
-    from birdnetlib import Recording  # lazy: เลี่ยงโหลด TensorFlow ในโหมด gen-spectrograms
-
-    meta = read_audio_metadata(audio_path) if use_meta else {}
-    if date_override is None and meta.get("datetime") is None:
-        raise ValueError("Recording date missing from metadata; enter --date YYYY-MM-DD")
+    context = recording_context_preview(audio_path, use_meta, dt_regex)
+    meta = context["metadata"]
+    if date_override is None and context["datetime"] is None:
+        raise ValueError("Recording date missing from metadata and filename; enter --date YYYYMMDD")
     if ((lat_arg is None and meta.get("lat") is None) or
             (lon_arg is None and meta.get("lon") is None)):
         raise ValueError("Recording location missing from metadata; enter --coords LAT,LON")
@@ -866,8 +1100,8 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
 
     # ---- วันเวลาเริ่มอัด ----  ลำดับ: --date > (metadata > ชื่อไฟล์ ถ้าไม่บังคับ filetime) > เวลาไฟล์
     fn_dt = None if use_filetime else filename_datetime(audio_path.name, dt_regex)
-    if meta.get("datetime") and not use_filetime:
-        rec_dt, dt_src = meta["datetime"], "metadata"
+    if context["datetime"] and not use_filetime:   # metadata / ชื่อไฟล์ / เวลาไฟล์ที่สอดคล้องกัน
+        rec_dt, dt_src = context["datetime"], context["datetime_source"]
     elif fn_dt:
         rec_dt, dt_src = fn_dt, "filename time"
     else:
@@ -906,11 +1140,28 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
     filter_date = rec_dt
     # โฟลเดอร์มีเวลาเริ่มบันทึกด้วย (YYYY.MM.DD_HHMM) เพื่อแยกไฟล์คนละ session ในวันเดียวกัน
     date_tag = rec_dt.strftime("%Y.%m.%d_%H%M")
-    date_folder = out_root / date_tag
+    date_folder = out_root / (date_tag + ("_v3preview" if getattr(analyzer, "direct_prediction", False) else ""))
 
-    # ข้ามถ้าไฟล์นี้เคยตัดแล้ว (เช็คก่อน analyze เพื่อไม่เสียเวลา)
-    if not force and _already_processed(date_folder, sid):
+    settings = {
+        "model": getattr(analyzer, "model_name", ""), "date": rec_dt.date().isoformat(),
+        "lat": lat, "lon": lon, "min_conf": min_conf, "overlap": overlap,
+        "out_of_range_min_conf": out_of_range_min_conf, "gap": gap,
+        "lead": lead, "tail": tail, "target_dbfs": target_dbfs,
+        "format": fmt, "mono": make_mono, "alt_species": incl_alt,
+        "cut_unknown": cut_unknown, "unknown_floor": unknown_floor,
+        "keep_continuous": keep_continuous,
+        "detection_boxes": True,   # ผลเก่าไม่มีกรอบ -> รันซ้ำจะวิเคราะห์ใหม่ (ผลตรวจเดิมยังอยู่)
+    }
+    if site_habitats:                     # เพิ่มเฉพาะเมื่อระบุ ผลเดิมที่ไม่ได้ระบุจะได้ไม่ต้องวิเคราะห์ใหม่
+        settings["habitat"] = list(site_habitats)
+    settings = json.dumps(settings, sort_keys=True, separators=(",", ":"))
+    # ข้ามเฉพาะเมื่อข้อมูลต้นทาง การตั้งค่า และคลิปที่สร้างไว้ตรงกัน
+    if not force and _already_processed(date_folder, sid, settings):
         print(f"\n=== {audio_path.name} ===  skip: already processed in {date_tag}/ (use --force to redo)")
+        return None, date_folder
+    if not force and _approved_under_other_settings(date_folder, sid, settings):
+        print(f"\n=== {audio_path.name} ===  skip: approved result uses older settings; "
+              "choose another output folder or use --force to replace it")
         return None, date_folder
     previous_hashes = _previous_hashes(date_folder, sid)
     staging_dir = date_folder / ".staging" / sid
@@ -934,15 +1185,51 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
     # เปิด cut_unknown -> analyze ที่ threshold ต่ำ (floor) เพื่อเก็บเสียงที่ BirdNET
     # มั่นใจไม่พอด้วย แล้วค่อยแยก: conf >= min_conf = ID ได้, [floor, min_conf) = unknown
     analysis_min = min(min_conf, unknown_floor) if cut_unknown else min_conf
-    recording = Recording(analyzer, str(audio_path),
-                          lat=lat, lon=lon, date=filter_date, min_conf=analysis_min)
     print("  analyzing audio (long files may take several minutes) ...")
-    recording.analyze()
-    raw = recording.detections
-    dets = [d for d in raw if d["confidence"] >= min_conf]
-    low_dets = [d for d in raw if d["confidence"] < min_conf] if cut_unknown else []
+    if getattr(analyzer, "direct_prediction", False):
+        raw = analyzer.detections(audio_path, overlap, analysis_min,
+                                  lat, lon, filter_date)
+    else:
+        from birdnetlib import Recording  # lazy: no BirdNET dependency in spectrogram mode
+        recording = Recording(analyzer, str(audio_path),
+                              lat=lat, lon=lon, date=filter_date, min_conf=analysis_min,
+                              overlap=overlap, return_all_detections=True)
+        recording.analyze()
+        raw = recording.detections
+    def in_area(d):
+        # ชนิดที่โมเดลพื้นที่ไม่รู้จัก (แมลง กบ สัตว์อื่น ชื่อไม่ตรง) ถือว่าไม่ผ่าน
+        return (d.get("location_filter_available", True) and
+                d.get("is_predicted_for_location_and_date", True))
+
+    def kept(d):
+        return in_area(d) or (out_of_range_min_conf is not None and
+                              d["confidence"] >= out_of_range_min_conf)
+
+    dets = [d for d in raw if d["confidence"] >= min_conf and kept(d)]
+    filtered_out = [d for d in raw if d["confidence"] >= min_conf and not kept(d)]
+    low_dets = [d for d in raw if d["confidence"] < min_conf and in_area(d)] if cut_unknown else []
+    unexpected = sum(not in_area(d) for d in dets)
     print(f"  found {len(dets)} detections"
+          + (f" ({unexpected} outside the location/date filter; review carefully)" if unexpected else "")
           + (f" + {len(low_dets)} low-conf -> _Unknown" if cut_unknown else ""))
+    if filtered_out:
+        names = sorted({d["common_name"] for d in filtered_out})
+        shown = ", ".join(names[:5]) + (" ..." if len(names) > 5 else "")
+        print(f"  location/date filter excluded {len(filtered_out)} candidate(s): {shown}")
+
+    # ---- ถิ่นอาศัยของจุดบันทึก (AVONET) ---- นกน้ำในจุดที่ไม่มีน้ำต้องคะแนนสูงพอจะเป็นนกบินผ่าน
+    def habitat_of(d):
+        return species_habitat(d["scientific_name"], d.get("geo_scientific_name"))
+
+    if site_habitats:
+        habitat_out = [d for d in dets if fits_site(habitat_of(d), site_habitats) is False and
+                       d["confidence"] < HABITAT_MISMATCH_MIN_CONF]
+        if habitat_out:
+            dets = [d for d in dets if d not in habitat_out]
+            names = sorted({f"{d['common_name']} ({habitat_of(d)})" for d in habitat_out})
+            shown = ", ".join(names[:5]) + (" ..." if len(names) > 5 else "")
+            print(f"  site habitat ({'+'.join(site_habitats)}) excluded {len(habitat_out)} "
+                  f"candidate(s): {shown}")
     if not dets and not low_dets:
         print("  no confident bird sounds — skipping this file (try lowering --min-conf)")
         return [], date_folder
@@ -960,9 +1247,15 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
     all_dets = [(d["start_time"], d["end_time"], d["common_name"],
                  d["scientific_name"], d["confidence"]) for d in dets]
     by_species = defaultdict(list)
+    species_expected = {}
+    species_habitats = {}
     for d in dets:
-        by_species[(d["common_name"], d["scientific_name"])].append(
+        key = (d["common_name"], d["scientific_name"])
+        by_species[key].append(
             (d["start_time"], d["end_time"], d["confidence"]))
+        species_expected[key] = (d.get("is_predicted_for_location_and_date", True)
+                                 if d.get("location_filter_available", True) else None)
+        species_habitats[key] = habitat_of(d)
 
     rows = []
     for (common, sci), items in sorted(by_species.items()):
@@ -995,6 +1288,7 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
             stats_clip = clip[:15000]
             snr = estimate_snr(stats_clip)
             peak_hz, flo, fhi = freq_stats(stats_clip, o["start"] - start_s, o["end"] - start_s)
+            boxes = detection_boxes(items, o, start_s, clip)
 
             clip = normalize_to(clip, target_dbfs)
 
@@ -1020,6 +1314,13 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
                 "End offset (s)": round(o["end"], 1),
                 "Duration (s)": dur,
                 "Max confidence": round(o["max_conf"], 3),
+                "Expected by location/date": (
+                    "Not checked — verify by ear" if species_expected[(common, sci)] is None
+                    else "Yes" if species_expected[(common, sci)] else "No — verify by ear"
+                ),
+                "Species habitat": species_habitats[(common, sci)],
+                "Fits site habitat": {True: "Yes", False: "No — verify by ear", None: ""}[
+                    fits_site(species_habitats[(common, sci)], site_habitats)],
                 "Alt species 1": alt1[0],
                 "Alt1 conf": round(alt1[1], 3) if alt1[1] != "" else "",
                 "Alt species 2": alt2[0],
@@ -1030,6 +1331,7 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
                 "Peak freq (Hz)": peak_hz if peak_hz is not None else "",
                 "Freq low (Hz)": flo if flo is not None else "",
                 "Freq high (Hz)": fhi if fhi is not None else "",
+                "Detection boxes": json.dumps(boxes),
                 "AI confidence band (1-4)": conf_to_stars(o["max_conf"]),
                 "Place": place or "",
                 "File": str(out_path.relative_to(date_folder)),
@@ -1037,6 +1339,7 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
                 "Source file": audio_path.name,
                 "Source path": str(audio_path.resolve()),
                 "Source ID": sid,
+                "Analysis settings": settings,
                 "Date/time source": dt_src,
                 "Latitude": lat,
                 "Longitude": lon,
@@ -1071,6 +1374,7 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
             stats_clip = clip[:15000]
             snr = estimate_snr(stats_clip)
             peak_hz, flo, fhi = freq_stats(stats_clip, o["start"] - start_s, o["end"] - start_s)
+            boxes = detection_boxes(unk_items, o, start_s, clip)
             clip = normalize_to(clip, target_dbfs)
             # BirdNET เดาชนิด conf สูงสุดในช่วงนี้ (แค่ใบ้ ไม่ยืนยัน)
             guess = max((d for d in low_dets
@@ -1096,6 +1400,7 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
                 "End offset (s)": round(o["end"], 1),
                 "Duration (s)": dur,
                 "Max confidence": round(o["max_conf"], 3),
+                "Expected by location/date": "",
                 "Alt species 1": g_common,       # BirdNET เดา (conf ต่ำ ไม่ยืนยัน)
                 "Alt1 conf": g_conf,
                 "Alt species 2": "",
@@ -1106,6 +1411,7 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
                 "Peak freq (Hz)": peak_hz if peak_hz is not None else "",
                 "Freq low (Hz)": flo if flo is not None else "",
                 "Freq high (Hz)": fhi if fhi is not None else "",
+                "Detection boxes": json.dumps(boxes),
                 "AI confidence band (1-4)": "",
                 "Place": place or "",
                 "File": str(out_path.relative_to(date_folder)),
@@ -1113,6 +1419,7 @@ def process_file(analyzer, audio_path: Path, out_root: Path, *, lat_arg, lon_arg
                 "Source file": audio_path.name,
                 "Source path": str(audio_path.resolve()),
                 "Source ID": sid,
+                "Analysis settings": settings,
                 "Date/time source": dt_src,
                 "Latitude": lat,
                 "Longitude": lon,
@@ -1243,6 +1550,10 @@ def write_summary(rows, xlsx_path: Path, processed_sources=(), processed_ids=(),
                         old_path.unlink()
                         if column == "File":
                             old_path.with_suffix(".png").unlink(missing_ok=True)
+                            try:
+                                old_path.parent.rmdir()  # remove an obsolete, now-empty species folder
+                            except OSError:
+                                pass
                     else:
                         print(f"  warning: superseded copy was edited; kept {old_path}")
             except (OSError, ValueError) as exc:
@@ -1269,15 +1580,30 @@ def build_parser():
     p.add_argument("--lon", type=float, default=None, help="longitude (blank = metadata/default)")
     p.add_argument("--coords", default=None,
                    help="single field 'lat,lon' e.g. 13.8119502,100.553166 or a Google Maps link (overrides --lat/--lon)")
-    p.add_argument("--date", default=REC_DATE, help="recording date YYYY-MM-DD; required when metadata has no date")
+    p.add_argument("--date", default=REC_DATE,
+                   help="recording date YYYYMMDD (or YYYY-MM-DD); required only when metadata and filename have no date")
+    p.add_argument("--fill-missing-metadata", action="store_true",
+                   help="apply --date, --coords and --start-time only to files missing those details")
     p.add_argument("--same-date-for-all", action="store_true",
                    help="confirm that --date applies to every file in a folder")
-    p.add_argument("--start-time", default=None, help="actual recording start time HH:MM or HH:MM:SS")
+    p.add_argument("--start-time", default=None, help="actual recording start time HHMM or HHMMSS (HH:MM also works)")
     p.add_argument("--use-metadata", action=argparse.BooleanOptionalAction, default=USE_METADATA,
                    help="read date/coords from file metadata (ffprobe + BWF bext + XMP)")
     p.add_argument("--use-filetime", action="store_true",
-                   help="use the file timestamp as unverified recording time; a date is still required if metadata has none")
-    p.add_argument("--min-conf", type=float, default=MIN_CONF, help="minimum confidence 0-1")
+                   help="use the file timestamp as unverified recording time")
+    p.add_argument("--min-conf", type=float, default=None,
+                   help="minimum confidence 0-1 (default: 0.5 for 3.0-preview; 0.25 for 2.4)")
+    p.add_argument("--model", choices=("2.4", "3.0-preview"), default=DEFAULT_MODEL,
+                   help="acoustic model; 3.0-preview is the default. Both use the location/date species filter")
+    p.add_argument("--overlap", type=float, default=OVERLAP_SEC,
+                   help="overlap between 3-second BirdNET analysis windows; 0 <= overlap < 3")
+    p.add_argument("--out-of-range-min-conf", type=float, default=OUT_OF_RANGE_MIN_CONF,
+                   help="also keep candidates outside the location/date species list (or not covered "
+                        "by it) at this confidence, for vagrant review; off by default")
+    p.add_argument("--habitat", default="",
+                   help=f"recording site habitat(s), comma-separated: {', '.join(SITE_HABITATS)}. "
+                        "Water birds then need a matching water habitat or confidence >= "
+                        f"{HABITAT_MISMATCH_MIN_CONF}; blank = no habitat check")
     p.add_argument("--occurrence-gap", type=float, default=OCCURRENCE_GAP_SEC,
                    help="gap <= this (seconds) = same occurrence")
     p.add_argument("--lead", type=float, default=LEAD_SEC, help="padding before first sound (seconds)")
@@ -1308,6 +1634,11 @@ def main():
     # GUI หยุดงานด้วย SIGTERM -> ให้เป็น KeyboardInterrupt เพื่อ rollback/ลบ staging ได้เรียบร้อย
     signal.signal(signal.SIGTERM, signal.default_int_handler)
 
+    # ความเห็นที่สองจาก xeno-canto สำหรับคลิปเดียว (GUI เรียกเป็น subprocess)
+    if len(sys.argv) >= 2 and sys.argv[1] == "--second-opinion":
+        from second_opinion import main as second_opinion_main
+        sys.exit(second_opinion_main(sys.argv[2:]))
+
     # โหมดสร้าง spectrogram แยก (subprocess — ไม่โหลด TensorFlow)
     if len(sys.argv) >= 2 and sys.argv[1] == "--gen-spectrograms":
         if gen_spectrograms([Path(d) for d in sys.argv[2:]]):
@@ -1329,6 +1660,8 @@ def main():
         return
 
     args = build_parser().parse_args()
+    if args.min_conf is None:
+        args.min_conf = MIN_CONF if args.model == "3.0-preview" else V2_MIN_CONF
     if args.coords:
         cc = parse_coords(args.coords)
         if cc:
@@ -1340,8 +1673,17 @@ def main():
             (args.lon is not None and not -180 <= args.lon <= 180)):
         print("Coordinates are outside valid latitude/longitude ranges")
         sys.exit(2)
-    if not 0 <= args.min_conf <= 1 or not 0 <= args.unknown_min_conf <= 1:
+    if (not 0 <= args.min_conf <= 1 or not 0 <= args.unknown_min_conf <= 1 or
+            (args.out_of_range_min_conf is not None and not 0 <= args.out_of_range_min_conf <= 1)):
         print("Confidence thresholds must be between 0 and 1")
+        sys.exit(2)
+    try:
+        site_habitats = parse_site_habitats(args.habitat)
+    except ValueError as exc:
+        print(exc)
+        sys.exit(2)
+    if not 0 <= args.overlap < 3:
+        print("Overlap must be at least 0 and less than 3 seconds")
         sys.exit(2)
     if min(args.occurrence_gap, args.lead, args.tail) < 0:
         print("Occurrence gap, lead, and tail cannot be negative")
@@ -1349,26 +1691,21 @@ def main():
     input_path = Path(args.audio)
     root_out = Path(args.output)
     try:
-        if args.date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", args.date):
-            raise ValueError("invalid date format")
-        date_override = datetime.strptime(args.date, "%Y-%m-%d") if args.date else None
+        date_override = parse_date_entry(args.date) if args.date else None
     except ValueError:
-        print("Date must be YYYY-MM-DD")
+        print(f"Date must be {DATE_HINT}")
         sys.exit(2)
     try:
-        start_time_override = None
-        if args.start_time:
-            fmt = "%H:%M:%S" if args.start_time.count(":") == 2 else "%H:%M"
-            start_time_override = datetime.strptime(args.start_time, fmt).time()
+        start_time_override = parse_time_entry(args.start_time) if args.start_time else None
     except ValueError:
-        print("Start time must be HH:MM or HH:MM:SS")
+        print(f"Start time must be {TIME_HINT}")
         sys.exit(2)
 
     files = collect_inputs(input_path)
     if not files:
         print(f"No audio file found at: {input_path}")
         sys.exit(1)
-    if len(files) > 1 and date_override and not args.same_date_for_all:
+    if len(files) > 1 and date_override and not args.same_date_for_all and not args.fill_missing_metadata:
         print("Date applies to every file in this folder. Verify all recordings share "
               "the same date and add --same-date-for-all, or process each date separately.")
         sys.exit(2)
@@ -1381,9 +1718,14 @@ def main():
     root_out.mkdir(parents=True, exist_ok=True)
 
     print(f"Processing {len(files)} file(s) | output: {root_out}")
-    print("Loading BirdNET model (once) ...")
-    from birdnetlib.analyzer import Analyzer  # lazy: โหลด TensorFlow ตรงนี้
-    analyzer = Analyzer()
+    print(f"Loading BirdNET {args.model} model (once) ...")
+    if args.model == "3.0-preview":
+        from v3_model import V3Analyzer
+        analyzer = V3Analyzer()
+        print("  experimental acoustic model; location/date species filter is active; verify every ID by ear")
+    else:
+        from birdnetlib.analyzer import Analyzer  # lazy: โหลด LiteRT ตรงนี้
+        analyzer = Analyzer()
 
     new_clips_by_date = defaultdict(int)    # date_folder -> คลิปใหม่รอบนี้ (รวมหลายไฟล์วันเดียวกัน)
     skipped_dates = set()                   # date_folder ที่มีไฟล์ถูกข้ามเพราะทำไว้แล้ว
@@ -1397,10 +1739,15 @@ def main():
                 print(f"  duplicate recording skipped: {audio_path}")
                 continue
             try:
+                context = recording_context_preview(audio_path, args.use_metadata,
+                                                    args.datetime_regex)
+                effective_date, effective_lat, effective_lon, effective_time = effective_overrides(
+                    context, date_override, args.lat, args.lon, start_time_override,
+                    args.fill_missing_metadata)
                 rows, date_folder = process_file(
                     analyzer, audio_path, root_out,
-                    lat_arg=args.lat, lon_arg=args.lon, cfg_lat=LAT, cfg_lon=LON,
-                    date_override=date_override, use_meta=args.use_metadata,
+                    lat_arg=effective_lat, lon_arg=effective_lon, cfg_lat=LAT, cfg_lon=LON,
+                    date_override=effective_date, use_meta=args.use_metadata,
                     min_conf=args.min_conf, gap=args.occurrence_gap,
                     lead=args.lead, tail=args.tail, target_dbfs=args.target_dbfs,
                     fmt=args.format, make_mono=args.mono, incl_alt=args.alt_species,
@@ -1408,7 +1755,9 @@ def main():
                     use_filetime=args.use_filetime,
                     cut_unknown=args.unknown, unknown_floor=args.unknown_min_conf,
                     keep_continuous=args.keep_continuous,
-                    start_time_override=start_time_override,
+                    start_time_override=effective_time,
+                    overlap=args.overlap, out_of_range_min_conf=args.out_of_range_min_conf,
+                    site_habitats=site_habitats,
                 )
                 if rows is not None:
                     # เขียน summary ทันทีทีละไฟล์: ถ้าหยุดกลางคัน ไฟล์ที่เสร็จแล้วไม่ต้องวิเคราะห์ใหม่
@@ -1457,4 +1806,5 @@ def main():
 
 
 if __name__ == "__main__":
+    paths.migrate_old_locations()   # กันโหลดโมเดลซ้ำถ้า GUI รุ่นก่อนยังเปิดอยู่
     main()

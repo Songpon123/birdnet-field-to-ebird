@@ -54,6 +54,27 @@ def load_reviews(summary: Path):
         book.close()
 
 
+def list_results(root):
+    """ผลวิเคราะห์ทุกชุด (<root>/<วัน_เวลา>/summary.xlsx) ใหม่สุดก่อน -> list ของ dict"""
+    found = []
+    for summary in Path(root).expanduser().glob("*/summary.xlsx"):
+        try:
+            rows = load_reviews(summary)
+            modified = summary.stat().st_mtime
+        except Exception:  # noqa: BLE001  ไฟล์เสียหรือกำลังถูกเขียน: ข้ามไปก่อน
+            continue
+        statuses = [str(row.get("Review status") or "Pending") for row in rows]
+        found.append({
+            "path": summary, "folder": summary.parent.name, "clips": len(rows),
+            "approved": statuses.count("Approved"), "rejected": statuses.count("Rejected"),
+            "sources": sorted({str(row["Source file"]) for row in rows if row.get("Source file")}),
+            "modified": modified,
+        })
+    # ชื่อโฟลเดอร์ขึ้นต้นด้วย YYYY.MM.DD_HHMM จึงเรียงตามเวลาบันทึกได้
+    found.sort(key=lambda info: (info["folder"][:15], info["modified"]), reverse=True)
+    return found
+
+
 def save_review(summary: Path, row_number: int, *, status: str, common: str,
                 scientific: str, rating=None, notes="", expected_file=None):
     if status not in ("Pending", "Approved", "Rejected"):

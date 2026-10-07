@@ -33,6 +33,20 @@ ffmpeg
 ffprobe
 *.zip
 
+# Local app state: may contain private API keys, downloaded models, and cached data.
+data/
+**/settings.json
+**/.env
+**/.env.*
+**/credentials*
+**/*secret*
+*.pem
+*.p12
+*.pfx
+
+# Field recordings and evidence notes belong only on the user's computer.
+accuracy_cases/
+
 # misc
 *.log
 .streamlit/

@@ -2,19 +2,21 @@
 
 Turn field recordings into reviewable bird clips for eBird / Macaulay Library. BirdNET suggests species; a person must listen, confirm the identification, and rate audio quality before uploading.
 
+**Current macOS app (7 October 2026):** BirdNET 3.0 preview 3.1 acoustic model via `birdnet==1.1.1`, geo model 3.0.4, and optional BirdNET 2.4 comparison. See the [complete macOS guide](docs/macOS.md) and [quick start](docs/macOS-quickstart.txt). This repository contains source code and redistributable app assets; it deliberately excludes local API keys, downloaded models, the bundled Python runtime, recordings, and analysis results.
+
 ## What the current app does
 
-- **Start tab:** choose an audio file or folder and analysis starts. If the recording date or location is missing from metadata, the app asks for the real values first. It never substitutes a file's modification date for a missing recording date.
-- **Analysis:** BirdNET detects calls and exports a WAV per occurrence, preserving the source sample rate and bit depth where possible. Optional spectrograms and alternate candidate species help with review.
-- **Review clips tab:** listen, inspect spectrograms, correct names, and assign a human quality rating. Only approved clips are copied to `Ready/`. Reviews are kept when an unchanged source is selected again.
+- **Start:** choose an audio file or folder. The app previews recording time and location from embedded metadata, filename, or consistent recorder file timestamps, and asks for any missing details.
+- **Analysis:** BirdNET 3.0 preview (or 2.4) detects calls and exports a WAV per occurrence. The 3.0 geo model checks location and season; an optional site-habitat check warns about unlikely water birds. Spectrograms and alternate candidates help with review.
+- **Review clips:** listen, inspect spectrograms, compare xeno-canto reference sounds, request a second opinion, check eBird, correct names, and assign a human quality rating. Only approved clips are copied to `Ready/`. Reviews are kept when an unchanged source is selected again.
 - **Advanced settings:** adjust confidence, padding, normalization, unknown detections, and continuous spans.
-- **Merge clips:** combine clips only after confirming they are from the same individual bird.
+- **Merge clips and jobs:** combine clips only after confirming they are from the same individual bird. Queue additional recordings, stop a run, and resume completed files later.
 
 Outputs go to `~/BirdNET_eBird` by default, grouped by recording date and start time. Each session has `summary.xlsx`. The original recordings are left untouched. If a run is interrupted, completed files remain available and a later run can continue.
 
 ## macOS: build a desktop bundle
 
-This GitHub repository contains **source code**, not the large Python runtime, model, or ffmpeg binaries. Build a portable bundle on an Apple Silicon Mac with Python 3.12 dependencies and ffmpeg/ffprobe:
+This GitHub repository contains **source code**, not the large Python runtime, model, ffmpeg binaries, or your API keys. Build a portable bundle on an Apple Silicon Mac with Python 3.12 dependencies and ffmpeg/ffprobe:
 
 ```bash
 brew install ffmpeg
@@ -22,7 +24,7 @@ bash build-macos.sh
 open "dist/BirdNET-eBird-mac/BirdNET eBird.app"
 ```
 
-The build produces `dist/BirdNET-eBird-mac/` with `BirdNET eBird.app`, a `.command` fallback, Python, and the application code. Keep the `.app` **inside that folder**; it uses the sibling `python/` and `app/` directories. To share it, zip the entire folder:
+The build produces `dist/BirdNET-eBird-mac/` with `BirdNET eBird.app`, a `.command` fallback, Python, and the application code. The BirdNET 3.0 models download into the bundle's `data/birdnet/` on first use. Keep the `.app` **inside that folder**; it uses the sibling `python/` and `app/` directories. To share it, zip the entire folder:
 
 ```bash
 ditto -c -k --sequesterRsrc --keepParent dist/BirdNET-eBird-mac BirdNET-eBird-mac.zip
@@ -30,7 +32,7 @@ ditto -c -k --sequesterRsrc --keepParent dist/BirdNET-eBird-mac BirdNET-eBird-ma
 
 For a bundle that runs without Homebrew ffmpeg on another Mac, build self-contained audio binaries using `tools/build_ffmpeg.sh` and set `FFMPEG_DIR` to its `prefix/bin` when running `build-macos.sh`. The checked-in Mac dependency versions match the working Apple Silicon package; an Intel build has not been verified.
 
-Because the app is not notarized, macOS may require opening it with **Control-click → Open** on first launch. See [อ่านก่อนใช้.txt](%E0%B8%AD%E0%B9%88%E0%B8%B2%E0%B8%99%E0%B8%81%E0%B9%88%E0%B8%AD%E0%B8%99%E0%B9%83%E0%B8%8A%E0%B9%89.txt) for the Thai and English packaged guide.
+Because the app is not notarized, macOS may require **System Settings → Privacy & Security → Open Anyway** on first launch. See the [macOS quick start](docs/macOS-quickstart.txt) for the packaged guide.
 
 ## Run from source
 
@@ -66,7 +68,7 @@ The optional Streamlit interface remains in `birdnet_ui.py`; run it with `run-we
 .venv/bin/python app/field_audio_to_ebird.py --group clip1.wav clip2.wav -o merged.wav
 ```
 
-For files without a date in metadata, `--date` is required even if the filename or file modification time looks like a date. A location is also required if absent from metadata. `--coords` accepts latitude/longitude or a Google Maps link. For a folder with a manual date, `--same-date-for-all` confirms that it applies to every file.
+For files without a date in metadata or the filename, provide `--date`. A location is also required if absent from metadata. `--coords` accepts latitude/longitude or a Google Maps link. For a folder with a manual date, `--same-date-for-all` confirms that it applies to every file.
 
 ## Checks
 

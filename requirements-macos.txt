@@ -1,7 +1,9 @@
 # macOS dependencies matching the working Apple Silicon desktop package.
 # Python 3.12 is required; app/tflite_runtime/ routes birdnetlib to LiteRT.
+birdnet==1.1.1
 birdnetlib==0.18.1
 ai-edge-litert==2.2.0
+onnxruntime==1.30.0
 librosa==0.11.0
 resampy==0.4.3
 pydub==0.25.1
@@ -12,3 +14,4 @@ numba==0.66.0
 pandas==3.0.3
 openpyxl==3.1.5
 matplotlib==3.11.1
+pillow==12.3.0

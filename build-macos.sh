@@ -48,6 +48,7 @@ mkdir -p "$bundle/app/tflite_runtime" "$bundle/app/assets"
 cp "$here"/app/*.py "$bundle/app/"
 cp "$here"/app/tflite_runtime/*.py "$bundle/app/tflite_runtime/"
 cp "$here"/app/assets/app_icon.png "$bundle/app/assets/"
+cp "$here"/app/assets/avonet_habitat.csv "$bundle/app/assets/"
 
 # --- ffmpeg + ffprobe (set FFMPEG_DIR to self-contained builds when distributing) ---
 for b in ffmpeg ffprobe; do
@@ -60,8 +61,9 @@ for b in ffmpeg ffprobe; do
   fi
 done
 
-# --- packaged guide (same text maintained in the repository) ---
-cp "$here/อ่านก่อนใช้.txt" "$bundle/อ่านก่อนใช้.txt"
+# --- macOS guide for the bundled app ---
+cp "$here/docs/macOS-quickstart.txt" "$bundle/อ่านก่อนใช้.txt"
+cp "$here/docs/macOS.md" "$bundle/README.md"
 
 # --- double-click launcher: BirdNET-eBird.command ---
 cat > "$bundle/BirdNET-eBird.command" <<'LAUNCH'

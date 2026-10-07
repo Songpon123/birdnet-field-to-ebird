@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """Simple desktop UI for the BirdNET to eBird workflow."""
 
-import os
 import sys
 import queue
 import re
 import threading
-import subprocess
 import json
 import time
 import webbrowser
@@ -20,13 +18,15 @@ from PIL import Image, ImageTk
 from entry_formats import DATE_HINT, TIME_HINT, parse_date_entry, parse_time_entry
 from habitat import MISMATCH_MIN_CONF, SITE_HABITATS
 import paths
+import platform_tools
+from platform_tools import open_path, play_audio, request_stop
 from app_settings import load_settings, save_settings
 from review_store import list_results, load_reviews, save_review
 import ebird
 import second_opinion
 import xeno_canto
 
-PYTHON = sys.executable
+PYTHON = platform_tools.child_python()   # Windows: python.exe แทน pythonw.exe (อ่าน stdout ได้)
 SCRIPT = Path(__file__).resolve().parent / "field_audio_to_ebird.py"
 ICON = Path(__file__).resolve().parent / "assets" / "app_icon.png"
 
@@ -224,7 +224,7 @@ class App:
         proc = self.proc
         if self.job_running and time.monotonic() < self._close_deadline:
             if proc is not None and proc.poll() is None and not self._stop_sent:
-                proc.terminate()   # CLI เปลี่ยน SIGTERM เป็น KeyboardInterrupt แล้ว rollback เอง
+                request_stop(proc)   # CLI เปลี่ยนเป็น KeyboardInterrupt แล้ว rollback เอง
                 self._stop_sent = True
             self.root.after(100, self._stop_job_then_close)
             return
@@ -292,12 +292,7 @@ class App:
             messagebox.showinfo("No results yet", "The output folder is created after the first successful analysis.")
             return
         try:
-            if sys.platform == "darwin":
-                subprocess.Popen(["open", str(path)])
-            elif os.name == "nt":
-                os.startfile(str(path))
-            else:
-                subprocess.Popen(["xdg-open", str(path)])
+            open_path(path)
         except Exception as exc:
             messagebox.showerror("Cannot open folder", str(exc))
 
@@ -1089,9 +1084,7 @@ class App:
             path = self._review_audio_path()
             if not path.is_file():
                 raise FileNotFoundError(path)
-            if sys.platform != "darwin":
-                raise RuntimeError("Preview uses macOS afplay")
-            self.audio_player = subprocess.Popen(["afplay", str(path)])
+            self.audio_player = play_audio(path)
         except Exception as exc:
             messagebox.showerror("Cannot play clip", str(exc))
 
@@ -1105,7 +1098,7 @@ class App:
             path = self._review_audio_path().with_suffix(".png")
             if not path.is_file():
                 raise FileNotFoundError(f"Spectrogram not found: {path}")
-            subprocess.Popen(["open", str(path)])
+            open_path(path)
         except Exception as exc:
             messagebox.showerror("Cannot open spectrogram", str(exc))
 
@@ -1156,9 +1149,7 @@ class App:
 
         def work():
             try:
-                env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                        encoding="utf-8", errors="replace", env=env, bufsize=1)
+                proc = platform_tools.start_child(cmd)
                 for line in proc.stdout:
                     self._second_opinion_q.put(line.rstrip())
                 proc.wait()
@@ -1419,7 +1410,7 @@ class App:
                                       "Finished files are kept; run it again later to continue."):
             return
         job["stopping"] = True
-        proc.terminate()                  # CLI เปลี่ยน SIGTERM เป็น KeyboardInterrupt แล้ว rollback เอง
+        request_stop(proc)                # CLI เปลี่ยนเป็น KeyboardInterrupt แล้ว rollback เอง
         self.status.set(self._job_progress_text())
 
     def show_jobs(self):
@@ -1517,13 +1508,7 @@ class App:
 
     def _worker(self, cmd):
         try:
-            env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
-            # กันหน้าต่าง console เด้งตอน GUI spawn python.exe (Windows)
-            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-            self.proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace", env=env, bufsize=1,
-                creationflags=flags)
+            self.proc = platform_tools.start_child(cmd)   # Windows: ไม่มี console เด้ง, หยุดผ่าน stdin
             for line in self.proc.stdout:
                 self.q.put(line.rstrip())
             code = self.proc.wait()
@@ -1773,7 +1758,11 @@ class ReferenceWindow:
                     self._show(*payload)
                 elif kind == "play":
                     self.app.review_stop()
-                    self.app.audio_player = subprocess.Popen(["afplay", str(payload[0])])
+                    try:
+                        self.app.audio_player = play_audio(payload[0])
+                    except (OSError, RuntimeError) as exc:
+                        self.state.set(f"Cannot play: {exc}")
+                        continue
                     self.state.set(f"Playing {payload[0].stem}")
                 else:
                     self.state.set(payload[0])
@@ -1796,6 +1785,7 @@ class ReferenceWindow:
 
 def main():
     paths.migrate_old_locations()   # ข้อมูลจาก ~/Library (รุ่นก่อน) -> data/
+    platform_tools.enable_high_dpi()
     root = tk.Tk()
     App(root)
     root.mainloop()

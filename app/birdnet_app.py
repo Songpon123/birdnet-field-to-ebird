@@ -13,8 +13,23 @@ import sys
 import multiprocessing
 
 
+def _log_without_console():
+    """pythonw.exe (ตัวเปิดบน Windows) ไม่มี console: stdout/stderr เป็น None -> เขียนลง data/logs"""
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    import paths
+    try:
+        paths.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        log = open(paths.LOG_FILE, "a", encoding="utf-8", buffering=1)
+    except OSError:
+        return
+    sys.stdout = sys.stdout or log
+    sys.stderr = sys.stderr or log
+
+
 def main():
     multiprocessing.freeze_support()  # กัน child process วน spawn ตอน frozen
+    _log_without_console()
     argv = sys.argv[1:]
     want_gui = (not argv) or argv[0] == "--gui"
     if want_gui:

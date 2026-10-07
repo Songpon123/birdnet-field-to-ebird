@@ -53,6 +53,7 @@ from pydub import AudioSegment
 import pandas as pd
 
 import paths  # ตั้ง BIRDNET_APP_DATA -> data/birdnet ก่อนโหลด BirdNET 3.0
+from platform_tools import NO_WINDOW, bundled_tool, watch_for_stop
 from entry_formats import DATE_HINT, TIME_HINT, parse_date_entry, parse_time_entry
 from review_store import REVIEW_COLUMNS
 from habitat import (MISMATCH_MIN_CONF as HABITAT_MISMATCH_MIN_CONF, SITE_HABITATS,
@@ -110,16 +111,15 @@ def _configure_runtime():
         for candidate in dict.fromkeys(str(p) for p in candidates if p):
             try:
                 result = subprocess.run([candidate, "-version"], stdout=subprocess.DEVNULL,
-                                        stderr=subprocess.DEVNULL, timeout=5)
+                                        stderr=subprocess.DEVNULL, timeout=5, creationflags=NO_WINDOW)
                 if result.returncode == 0:
                     return candidate
             except (OSError, subprocess.TimeoutExpired):
                 continue
         return None
 
-    # ffmpeg/ffprobe ที่แนบมากับโปรแกรม (ข้าง app/) มาก่อน ไม่ขึ้นกับลำดับ PATH ของตัวเปิดแอป
-    bundle = Path(__file__).resolve().parent.parent
-    ffmpeg = working_binary(bundle / "ffmpeg", shutil.which("ffmpeg"),
+    # ffmpeg/ffprobe ที่แนบมากับโปรแกรม (mac: ข้าง app/, Windows: bin\) มาก่อน ไม่ขึ้นกับ PATH ของตัวเปิดแอป
+    ffmpeg = working_binary(bundled_tool("ffmpeg"), shutil.which("ffmpeg"),
                             "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg")
     if not ffmpeg:
         candidates = [
@@ -322,7 +322,7 @@ def read_audio_metadata(path: Path) -> dict:
             r = subprocess.run([ffprobe, "-v", "quiet", "-print_format", "json",
                                 "-show_format", "-show_streams", str(path)],
                                capture_output=True, text=True, encoding="utf-8",
-                               errors="replace", timeout=30)
+                               errors="replace", timeout=30, creationflags=NO_WINDOW)
             data = json.loads(r.stdout or "{}")
             tags = {}
             for blk in [data.get("format", {})] + data.get("streams", []):
@@ -1035,7 +1035,7 @@ def _audio_duration(path: Path) -> float:
         try:
             r = subprocess.run([ffprobe, "-v", "quiet", "-show_entries", "format=duration",
                                 "-of", "default=nw=1:nk=1", str(path)],
-                               capture_output=True, text=True, timeout=30)
+                               capture_output=True, text=True, timeout=30, creationflags=NO_WINDOW)
             return float(r.stdout.strip())
         except (OSError, ValueError, subprocess.TimeoutExpired):
             pass
@@ -1633,6 +1633,7 @@ def build_parser():
 def main():
     # GUI หยุดงานด้วย SIGTERM -> ให้เป็น KeyboardInterrupt เพื่อ rollback/ลบ staging ได้เรียบร้อย
     signal.signal(signal.SIGTERM, signal.default_int_handler)
+    watch_for_stop()   # Windows: GUI ส่ง STOP ทาง stdin แทน SIGTERM
 
     # ความเห็นที่สองจาก xeno-canto สำหรับคลิปเดียว (GUI เรียกเป็น subprocess)
     if len(sys.argv) >= 2 and sys.argv[1] == "--second-opinion":

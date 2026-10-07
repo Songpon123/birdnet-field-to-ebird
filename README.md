@@ -2,7 +2,7 @@
 
 Turn field recordings into reviewable bird clips for eBird / Macaulay Library. BirdNET suggests species; a person must listen, confirm the identification, and rate audio quality before uploading.
 
-**Current macOS app (7 October 2026):** BirdNET 3.0 preview 3.1 acoustic model via `birdnet==1.1.1`, geo model 3.0.4, and optional BirdNET 2.4 comparison. See the [complete macOS guide](docs/macOS.md) and [quick start](docs/macOS-quickstart.txt). This repository contains source code and redistributable app assets; it deliberately excludes local API keys, downloaded models, the bundled Python runtime, recordings, and analysis results.
+**Current macOS and Windows app (7 October 2026):** BirdNET 3.0 preview 3.1 acoustic model via `birdnet==1.1.1`, geo model 3.0.4, and optional BirdNET 2.4 comparison. See the [complete macOS guide](docs/macOS.md), [macOS quick start](docs/macOS-quickstart.txt), and [Windows quick start](docs/Windows-quickstart.txt). This repository contains source code and redistributable app assets; it deliberately excludes local API keys, downloaded models, bundled Python runtimes, recordings, and analysis results.
 
 ## What the current app does
 
@@ -34,6 +34,12 @@ For a bundle that runs without Homebrew ffmpeg on another Mac, build self-contai
 
 Because the app is not notarized, macOS may require **System Settings → Privacy & Security → Open Anyway** on first launch. See the [macOS quick start](docs/macOS-quickstart.txt) for the packaged guide.
 
+## Windows: portable x64 package
+
+The [Windows release](https://github.com/Songpon123/birdnet-field-to-ebird/releases/tag/v1.3.0_windows) provides a ZIP for Windows 10/11 x64. Extract the whole `BirdNET-eBird-win` folder to a writable location such as `C:\BirdNET-eBird-win`, then open `BirdNET eBird.bat` or run `Create desktop shortcut.bat`. Python 3.12, ffmpeg/ffplay/ffprobe, VC++ runtime DLLs, and the BirdNET 3.0 acoustic and geo models are included. The ZIP does not contain local API keys or recordings. This package has passed ZIP integrity and DLL dependency checks on macOS; a native Windows launch still needs verification.
+
+To rebuild it on a Mac, install `uv` and run `tools/build_windows.sh`. The script downloads checksum-verified Windows Python and ffmpeg binaries, installs the pinned packages from `tools/windows/requirements-windows.txt`, and checks DLL imports before packaging. It includes `data/birdnet/` models when they are available locally; otherwise the models download at first use.
+
 ## Run from source
 
 The source layout has one application copy in `app/`. On macOS, use Python 3.12, install `requirements-macos.txt`, and run:
@@ -46,7 +52,7 @@ python3.12 -m venv .venv
 
 Install ffmpeg/ffprobe separately if working with M4A/MP3 and for complete metadata probing. The GUI uses the local machine only; it does not upload your audio to eBird.
 
-On Windows, `setup.ps1` and `run-gui.ps1` remain available. `build-exe.ps1` assembles a portable Windows folder with the current `app/` code. Windows packaging has not been retested with this update.
+On Windows, `setup.ps1` and `run-gui.ps1` remain available for a source installation. `build-exe.ps1` is an older packaging option; the portable ZIP above uses `tools/build_windows.sh`.
 
 The optional Streamlit interface remains in `birdnet_ui.py`; run it with `run-web.ps1` after Windows setup, or `streamlit run birdnet_ui.py` in a configured source environment. Its review view is separate from the desktop app's approval workflow.
 
@@ -80,4 +86,4 @@ The repository includes workflow tests for required metadata, review approvals, 
 
 ## Credits and use
 
-This project builds on BirdNET and the Cornell Lab's eBird / Macaulay Library guidance. Thanks to Biopikat, Tripitcha Wanwimolruk, Wichyanan Limparungpatthanakij, Utain Pummarin, Chutinton Viriyapanon, and the eBird reviewers of Thailand for field expertise and feedback. BirdNET model licensing and eBird upload guidelines still apply; see the model's CC BY-NC-SA 4.0 terms for non-commercial use.
+This project builds on BirdNET and the Cornell Lab's eBird / Macaulay Library guidance. Thanks to Biopikat, Tripitcha Wanwimolruk, Wichyanan Limparungpatthanakij, Utain Pummarin, Chutinton Viriyapanon, and the eBird reviewers of Thailand for field expertise and feedback. BirdNET model licensing and eBird upload guidelines still apply; see [model credits](MODEL_CREDITS.txt) and [model terms](LICENSES/).

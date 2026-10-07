@@ -3,3 +3,6 @@
 *.command   text eol=lf
 # PowerShell can be CRLF (Windows)
 *.ps1       text eol=crlf
+*.bat       text eol=crlf
+docs/Windows-quickstart.txt text eol=crlf
+tools/windows/README-Windows.txt text eol=crlf

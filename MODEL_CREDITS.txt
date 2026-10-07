@@ -1,0 +1,17 @@
+BirdNET models bundled with BirdNET-eBird 1.3.0 (macOS / Windows)
+
+Acoustic model: BirdNET+ V3.0 Developer Preview 3.1, 11K species (June 2026).
+Authors: Mario Lasseck, Maximilian Eibl, Holger Klinck, Stefan Kahl.
+Source: https://zenodo.org/records/20703646
+License and terms: LICENSES/BirdNET-V3-TERMS_OF_USE.txt
+Model file is unmodified; the app uses the official ONNX FP16 export.
+
+Geographic model: BirdNET+ Geomodel V3.0.4, 14K classes (August 2026).
+Authors: BirdNET team.
+Source: https://github.com/birdnet-team/geomodel/releases/tag/v3.0.4
+License and guidance: LICENSES/BirdNET-Geo-LICENSE-MODELS.md and
+LICENSES/BirdNET-Geo-ACCEPTABLE_USE.md
+Model file is unmodified; the app uses the official ONNX FP16 export.
+
+The optional BirdNET 2.4 model is supplied by the installed birdnetlib package.
+Review model output by listening before identifying a bird or uploading a clip.

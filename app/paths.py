@@ -1,13 +1,15 @@
-"""ข้อมูลของแอปทั้งหมดอยู่ในโฟลเดอร์ data/ ของโฟลเดอร์โปรแกรม (ย้ายทั้งโฟลเดอร์ได้):
+r"""ข้อมูลของแอปทั้งหมดอยู่ในโฟลเดอร์ data/ ของโฟลเดอร์โปรแกรม (ย้ายทั้งโฟลเดอร์ได้):
 
   data/settings.json   API key ของผู้ใช้ — ส่วนตัว อย่าส่งให้คนอื่น
   data/birdnet/        โมเดล BirdNET 3.0 (โหลดครั้งแรก ~280 MB)
   data/cache/          xeno-canto, second-opinion, ebird (ลบได้ จะโหลด/คำนวณใหม่)
+  data/logs/           log ของรุ่น Windows (เปิดด้วย pythonw ไม่มี console)
 
 log ของตัวเปิดบน Desktop ยังอยู่ ~/Library/Logs/BirdNET-eBird.log: ห้ามแก้สคริปต์ในตัวเปิด
 (macOS ผูกสิทธิ์เข้าถึง Desktop ไว้กับเนื้อหาไฟล์นั้น แก้แล้วแอปจะเปิดไม่ขึ้น)
 
-ถ้าโฟลเดอร์โปรแกรมเขียนไม่ได้ (เช่นอยู่บนดิสก์อ่านอย่างเดียว) ใช้ ~/Library แทน
+ถ้าโฟลเดอร์โปรแกรมเขียนไม่ได้ (เช่นดิสก์อ่านอย่างเดียว หรือ C:\Program Files) ใช้ ~/Library
+(mac) หรือ %LOCALAPPDATA%\BirdNET-eBird (Windows) แทน
 """
 
 import os
@@ -39,8 +41,15 @@ if _writable(DATA):
     SETTINGS_FILE = DATA / "settings.json"
     CACHE = DATA / "cache"
     BIRDNET_MODELS = DATA / "birdnet"
+    LOGS = DATA / "logs"
+elif os.name == "nt":
+    _local = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "BirdNET-eBird"
+    SETTINGS_FILE, CACHE, BIRDNET_MODELS = _local / "settings.json", _local / "cache", _local / "birdnet"
+    LOGS = _local / "logs"
 else:
     SETTINGS_FILE, CACHE, BIRDNET_MODELS = _OLD["settings"], _OLD["cache"], _OLD["birdnet"]
+    LOGS = LIBRARY / "Logs"
+LOG_FILE = LOGS / "BirdNET-eBird.log"
 
 # แพ็กเกจ birdnet อ่านตัวแปรนี้ตอน import: ต้องตั้งก่อนโหลดโมเดล 3.0 (process ลูกได้ค่านี้ด้วย)
 os.environ.setdefault("BIRDNET_APP_DATA", str(BIRDNET_MODELS))
@@ -48,7 +57,7 @@ os.environ.setdefault("BIRDNET_APP_DATA", str(BIRDNET_MODELS))
 
 def migrate_old_locations(log=print):
     """ย้ายข้อมูลจาก ~/Library (รุ่นก่อน) เข้า data/ — รันซ้ำได้ ไม่ทับของที่มีอยู่แล้ว"""
-    if not SETTINGS_FILE.is_relative_to(DATA):
+    if not SETTINGS_FILE.is_relative_to(DATA) or os.name == "nt":   # รุ่นก่อนมีแต่ mac
         return []
     moved = []
 

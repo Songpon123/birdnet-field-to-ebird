@@ -12,13 +12,13 @@
   - มีโมเดล BirdNET 3.0 ใน data/birdnet แล้ว วิเคราะห์ได้โดยไม่ต้องต่อเน็ต
 
 เปิดโปรแกรม
-  - ดับเบิลคลิก BirdNET eBird.app บน Desktop (ใช้โฟลเดอร์
-    Projects/Sound Recording/Programs/BirdNET-eBird-mac อย่าย้ายโฟลเดอร์นี้)
+  - แตก ZIP ทั้งโฟลเดอร์ แล้วดับเบิลคลิก BirdNET eBird.app ภายในโฟลเดอร์
+    BirdNET-eBird-mac (อย่าย้ายเฉพาะ .app ออกมา เพราะต้องใช้ python/, app/ และ data/)
   - หรือดับเบิลคลิก BirdNET-eBird.command ในโฟลเดอร์โปรแกรม
   - ครั้งแรกบนเครื่องใหม่ ถ้า macOS บอกว่าเปิดไม่ได้: System Settings > Privacy & Security
     > Open Anyway  หรือใน Terminal:  xattr -dr com.apple.quarantine /path/to/BirdNET-eBird-mac
-  - ส่งให้เพื่อน: รัน tools/make_share_zip.sh ได้ zip บน Desktop (ไม่มี API key ของคุณ)
-    ถ้าคัดลอกเอง ห้ามใส่ data/settings.json (มี API key) และอย่าส่งเฉพาะ BirdNET eBird.app
+  - ส่งให้เพื่อน: ใช้ลิงก์ GitHub Release รุ่นล่าสุด หรือสร้าง ZIP ใหม่โดยไม่ใส่
+    data/settings.json (มี API key) และอย่าส่งเฉพาะ BirdNET eBird.app
 
 ใช้งาน
   1. กด Choose audio file หรือ Choose audio folder (แถบบนสุด)
@@ -54,13 +54,13 @@ Requirements
   - The BirdNET 3.0 model is included in data/birdnet; analysis works offline
 
 Opening the app
-  - Double-click BirdNET eBird.app on the Desktop (it uses the folder
-    Projects/Sound Recording/Programs/BirdNET-eBird-mac; keep it in place)
+  - Extract the whole ZIP, then double-click BirdNET eBird.app inside the
+    BirdNET-eBird-mac folder. Keep it next to python/, app/, and data/.
   - Or double-click BirdNET-eBird.command in the program folder
   - First run on a new Mac, if macOS blocks it: System Settings > Privacy & Security
     > Open Anyway, or in Terminal:  xattr -dr com.apple.quarantine /path/to/BirdNET-eBird-mac
-  - To share: run tools/make_share_zip.sh; it makes a zip on the Desktop without your API keys.
-    If copying by hand, never include data/settings.json (your API keys)
+  - To share: use the latest GitHub Release link, or make a new ZIP that excludes
+    data/settings.json (your API keys). Do not send the .app by itself.
 
 Using it
   1. Click Choose audio file or Choose audio folder (top bar)

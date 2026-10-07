@@ -60,7 +60,7 @@ Ready/<ชนิด>/…_R<คะแนน>.wav   → อัปโหลด eBir
 |---|---|
 | ชิป | Apple Silicon (M1 ขึ้นไป) — Mac ชิป Intel ใช้ไม่ได้ |
 | macOS | Sequoia 15.2 ขึ้นไป (ไลบรารี LiteRT / ai-edge-litert ต้องการ) |
-| พื้นที่ | โปรแกรม ~680 MB, โมเดล BirdNET 3.0 ~300 MB (`data/birdnet/`), cache อาจหลายร้อย MB |
+| พื้นที่ | ชุดดาวน์โหลดที่รวมโมเดลใช้พื้นที่เมื่อแตกไฟล์ราว 1.2 GB; cache อาจเพิ่มอีกหลายร้อย MB |
 | อินเทอร์เน็ต | Second opinion, เสียงอ้างอิง, eBird (และโหลดโมเดล 3.0 ถ้า `data/birdnet/` ยังไม่มี) |
 | ติดตั้งเพิ่ม | ไม่ต้อง: Python, ffmpeg/ffprobe อยู่ในโฟลเดอร์โปรแกรมแล้ว |
 
@@ -69,20 +69,24 @@ Ready/<ชนิด>/…_R<คะแนน>.wav   → อัปโหลด eBir
 ## 3. เปิดโปรแกรม และส่งให้เพื่อน
 
 ### เปิดโปรแกรม
-- **ดับเบิลคลิก `BirdNET eBird.app` บน Desktop** — เป็นตัวเปิดที่ชี้ไปยังโฟลเดอร์
-  `Projects/Sound Recording/Programs/BirdNET-eBird-mac` (อย่าย้ายโฟลเดอร์นี้) log ของตัวเปิดอยู่ที่
-  `~/Library/Logs/BirdNET-eBird.log`
+- **ชุดดาวน์โหลดจาก GitHub Releases:** แตก ZIP ทั้งโฟลเดอร์ แล้วดับเบิลคลิก `BirdNET eBird.app`
+  **ภายในโฟลเดอร์ `BirdNET-eBird-mac`** เก็บแอปไว้ข้าง `python/`, `app/`, `data/`, `ffmpeg` และ `ffprobe`
+  อย่าย้ายเฉพาะไฟล์ `.app` ออกมา
+- **ตัวเปิดบน Desktop ของเครื่องผู้พัฒนา:** เป็นทางลัดที่ชี้ไปยัง
+  `Projects/Sound Recording/Programs/BirdNET-eBird-mac`; อย่าย้ายโฟลเดอร์โปรเจกต์นั้น
+  log ของตัวเปิดอยู่ที่ `~/Library/Logs/BirdNET-eBird.log`
 - หรือดับเบิลคลิก **`BirdNET-eBird.command`** ในโฟลเดอร์โปรแกรม (ใช้ได้กับทุกตำแหน่งที่วางโฟลเดอร์)
 
 ### ส่งให้เพื่อน
-1. **ใช้สคริปต์สร้าง zip** (แนะนำ) — ได้ `BirdNET-eBird-mac-share.zip` บน Desktop
+1. **ส่งลิงก์ GitHub Release รุ่นล่าสุด** เพื่อให้เพื่อนดาวน์โหลด ZIP ที่ตรวจแล้วและไม่มี API key
+   ถ้าส่งชุดจากเครื่องผู้พัฒนาเอง ใช้สคริปต์สร้าง zip — ได้ `BirdNET-eBird-mac-share.zip` บน Desktop
    พร้อมโมเดล BirdNET 3.0 แต่**ไม่มี API key ของคุณ** (`data/settings.json`), cache, backup, tests:
    ```bash
    "/Users/<you>/Desktop/Projects/Sound Recording/Programs/BirdNET-eBird-mac/tools/make_share_zip.sh"
    ```
 2. ถ้าคัดลอกเอง: ส่งทั้งโฟลเดอร์โปรแกรม แต่**ห้ามใส่ `data/settings.json`** (มี API key) และไม่ต้องใส่
    `data/cache/`, `_backup-before-upgrade/` (1.9 GB), `tests/`, `accuracy_cases/`,
-   `__pycache__` — อย่าส่ง `BirdNET eBird.app` บน Desktop อย่างเดียว เพราะเป็นแค่ทางลัดไปยังโฟลเดอร์ในเครื่องคุณ
+   `__pycache__` — อย่าส่ง `BirdNET eBird.app` เพียงไฟล์เดียว เพราะต้องใช้ไฟล์อื่นในโฟลเดอร์เดียวกัน
 3. ครั้งแรกบนเครื่องเพื่อน macOS จะกันไว้ (โปรแกรมไม่ได้ลงชื่อกับ Apple):
    ดับเบิลคลิก `BirdNET-eBird.command` → ขึ้นว่าเปิดไม่ได้ → **System Settings › Privacy & Security
    › Open Anyway** (Sequoia เลิกให้คลิกขวา › Open แล้ว) ครั้งต่อไปดับเบิลคลิกได้เลย
